@@ -299,7 +299,7 @@ async def splitArchive(file_path, max_size):
 async def splitVideo(file_path, max_size, remove: bool):
     global Paths, BOT, MSG, Messages
     _, filename = ospath.split(file_path)
-    _, extension = ospath.splitext(filename)
+    just_name, extension = ospath.splitext(filename)
 
     # FFmpeg command to get video information in JSON format
     cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", file_path]
@@ -321,7 +321,7 @@ async def splitVideo(file_path, max_size, remove: bool):
     # Calculate duration in seconds
     duration = int(target_size_bits / bitrate)
 
-    cmd = f'ffmpeg -i {file_path} -c copy -f segment -segment_time {duration} -reset_timestamps 1 "{Paths.temp_zpath}/{filename}.part%03d{extension}"'
+    cmd = f'ffmpeg -i {file_path} -c copy -f segment -segment_time {duration} -reset_timestamps 1 "{Paths.temp_zpath}/{just_name}.part%03d{extension}"'
 
     Messages.status_head = f"<b>✂️ SPLITTING » </b>\n\n<code>{filename}</code>\n"
     BotTimes.task_start = datetime.now()
