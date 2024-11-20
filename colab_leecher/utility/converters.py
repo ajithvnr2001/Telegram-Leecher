@@ -130,7 +130,7 @@ async def sizeChecker(file_path, remove: bool):
             await splitArchive(file_path, max_size)
         else:
             f_type = fileType(file_path)
-            if f_type == "video":
+            if f_type == "video" and BOT.Options.is_split:
                 # TODO: Store the size in a constant variable
                 await splitVideo(file_path, 2000, remove)
             else:
@@ -164,10 +164,11 @@ async def archive(path, is_split, remove: bool):
     else:
         cmd = f'7z a -mx=0 -tzip -p{BOT.Options.zip_pswd} {split} "{Paths.temp_zpath}/{name}.zip" {path}'
     proc = subprocess.Popen(cmd, shell=True)
-    total = sizeUnit(getSize(path))
+    total_size = getSize(path)
+    total_in_unit = sizeUnit(total_size)
     while proc.poll() is None:
         speed_string, eta, percentage = speedETA(
-            BotTimes.task_start, getSize(Paths.temp_zpath), total
+            BotTimes.task_start, getSize(Paths.temp_zpath), total_size
         )
         await status_bar(
             Messages.status_head,
@@ -175,7 +176,7 @@ async def archive(path, is_split, remove: bool):
             percentage,
             getTime(eta),
             sizeUnit(getSize(Paths.temp_zpath)),
-            total,
+            total_in_unit,
             "Xr-Zipp 🔒",
         )
         await sleep(1)
@@ -326,10 +327,11 @@ async def splitVideo(file_path, max_size, remove: bool):
     BotTimes.task_start = datetime.now()
 
     proc = subprocess.Popen(cmd, shell=True)
-    total = sizeUnit(getSize(file_path))
+    total_size = getSize(file_path)
+    total_in_unit = sizeUnit(total_size)
     while proc.poll() is None:
         speed_string, eta, percentage = speedETA(
-            BotTimes.task_start, getSize(Paths.temp_zpath), total
+            BotTimes.task_start, getSize(Paths.temp_zpath), total_size
         )
         await status_bar(
             Messages.status_head,
@@ -337,7 +339,7 @@ async def splitVideo(file_path, max_size, remove: bool):
             percentage,
             getTime(eta),
             sizeUnit(getSize(Paths.temp_zpath)),
-            total,
+            total_in_unit,
             "Xr-Split ✂️",
         )
         await sleep(1)
