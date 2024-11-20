@@ -185,6 +185,10 @@ async def handle_options(client, callback_query):
         keyboard = InlineKeyboardMarkup(
             [
                 [
+                    InlineKeyboardButton("Split Videos", callback_data="split-true"),
+                    InlineKeyboardButton("Zip Videos", callback_data="split-false"),
+                ],
+                [
                     InlineKeyboardButton("Convert", callback_data="convert-true"),
                     InlineKeyboardButton(
                         "Don't Convert", callback_data="convert-false"
@@ -202,7 +206,7 @@ async def handle_options(client, callback_query):
             ]
         )
         await callback_query.message.edit_text(
-            f"CHOOSE YOUR DESIRED OPTION ⚙️ »\n\n╭⌬ CONVERT » <code>{BOT.Setting.convert_video}</code>\n├⌬ OUTPUT FORMAT » <code>{BOT.Options.video_out}</code>\n╰⌬ OUTPUT QUALITY » <code>{BOT.Setting.convert_quality}</code>",
+            f"CHOOSE YOUR DESIRED OPTION ⚙️ »\n\n╭⌬ CONVERT » <code>{BOT.Setting.convert_video}</code>\n├⌬ SPLIT » <code>{BOT.Setting.split_video}</code>\n├⌬ OUTPUT FORMAT » <code>{BOT.Options.video_out}</code>\n╰⌬ OUTPUT QUALITY » <code>{BOT.Setting.convert_quality}</code>",
             reply_markup=keyboard,
         )
     elif callback_query.data == "caption":
@@ -266,6 +270,14 @@ async def handle_options(client, callback_query):
         res = callback_query.data.split("-")
         BOT.Options.caption = res[0]
         BOT.Setting.caption = res[1]
+        await send_settings(
+            client, callback_query.message, callback_query.message.id, False
+        )
+    elif callback_query.data in ["split-true", "split-false"]:
+        BOT.Options.is_split = True if callback_query.data == "split-true" else False
+        BOT.Setting.split_video = (
+            "Split Videos" if callback_query.data == "split-true" else "Zip Videos"
+        )
         await send_settings(
             client, callback_query.message, callback_query.message.id, False
         )
