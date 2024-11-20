@@ -344,7 +344,7 @@ async def send_settings(client, message, msg_id, command: bool):
                 InlineKeyboardButton(
                     f"Set {up_mode.capitalize()}", callback_data=up_mode
                 ),
-                InlineKeyboardButton("Video Convert", callback_data="video"),
+                InlineKeyboardButton("Video Settings", callback_data="video"),
             ],
             [
                 InlineKeyboardButton("Caption Font", callback_data="caption"),
