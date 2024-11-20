@@ -359,6 +359,7 @@ async def send_settings(client, message, msg_id, command: bool):
     )
     text = "**CURRENT BOT SETTINGS ⚙️ »**"
     text += f"\n\n╭⌬ UPLOAD » <i>{BOT.Setting.stream_upload}</i>"
+    text += f"\n├⌬ SPLIT » <i>{BOT.Setting.split_video}</i>"
     text += f"\n├⌬ CONVERT » <i>{BOT.Setting.convert_video}</i>"
     text += f"\n├⌬ CAPTION » <i>{BOT.Setting.caption}</i>"
     pr = "None" if BOT.Setting.prefix == "" else "Exists"
