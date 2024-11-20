@@ -103,6 +103,9 @@ def fileType(file_path: str):
         ".ts": "video",
         ".m3u8": "video",
         ".webm": "video",
+        ".mpg": "video",
+        ".mpeg": "video",
+        ".mpeg4": "video",
         ".vob": "video",
         ".m4v": "video",
         ".mp3": "audio",
@@ -341,7 +344,7 @@ async def send_settings(client, message, msg_id, command: bool):
                 InlineKeyboardButton(
                     f"Set {up_mode.capitalize()}", callback_data=up_mode
                 ),
-                InlineKeyboardButton("Video Convert", callback_data="video"),
+                InlineKeyboardButton("Video Settings", callback_data="video"),
             ],
             [
                 InlineKeyboardButton("Caption Font", callback_data="caption"),
@@ -356,6 +359,7 @@ async def send_settings(client, message, msg_id, command: bool):
     )
     text = "**CURRENT BOT SETTINGS ⚙️ »**"
     text += f"\n\n╭⌬ UPLOAD » <i>{BOT.Setting.stream_upload}</i>"
+    text += f"\n├⌬ SPLIT » <i>{BOT.Setting.split_video}</i>"
     text += f"\n├⌬ CONVERT » <i>{BOT.Setting.convert_video}</i>"
     text += f"\n├⌬ CAPTION » <i>{BOT.Setting.caption}</i>"
     pr = "None" if BOT.Setting.prefix == "" else "Exists"
