@@ -12,7 +12,7 @@ class BOT:
     class Setting:
         stream_upload = "Media"
         convert_video = "Yes"
-        convert_quality = "High"
+        convert_quality = "Low"
         caption = "Monospace"
         prefix = ""
         suffix = ""
@@ -21,7 +21,7 @@ class BOT:
     class Options:
         stream_upload = True
         convert_video = True
-        convert_quality = True
+        convert_quality = False
         caption = "code"
         video_out = "mp4"
         custom_name = ""
