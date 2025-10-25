@@ -19,7 +19,12 @@ logging.basicConfig(level=logging.INFO)
 
 install()
 
-# Fix for Python 3.12+ - Create event loop before initializing Client
-asyncio.set_event_loop(asyncio.new_event_loop())
+# Fix for Python 3.12+ - Create event loop after uvloop.install()
+# uvloop.install() replaces the event loop policy, so we need to create the loop after that
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
 colab_bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
