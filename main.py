@@ -18,14 +18,76 @@ DUMP_ID = 0  # @param {type: "integer"}
 # @markdown ---
 # @markdown ### ☁️ S3 / Wasabi / B2 Configuration *(optional — needed only for `/s3upload` and `/s3leech`)*
 # @markdown
-# @markdown Works with **AWS, Wasabi, Backblaze B2, MinIO** and any other S3-compatible service. Leave the
-# @markdown five fields below blank if you don't plan to use S3.
+# @markdown Works with **AWS, Wasabi, Backblaze B2, Cloudflare R2, DigitalOcean Spaces, MinIO** and any other S3-compatible service.
+# @markdown Leave the five fields below blank if you don't plan to use S3.
 # @markdown
-# @markdown **Endpoint examples:**
-# @markdown - **AWS S3:** leave `S3_ENDPOINT_URL` empty
-# @markdown - **Wasabi:** `https://s3.ap-northeast-1.wasabisys.com` (pick your region)
-# @markdown - **Backblaze B2:** `https://s3.us-west-002.backblazeb2.com`
-# @markdown - **MinIO / self-hosted:** `https://your-minio.example.com`
+# @markdown <details><summary><b>📋 Click to expand: copy-paste examples for every provider</b></summary>
+# @markdown
+# @markdown #### 🟧 AWS S3
+# @markdown ```text
+# @markdown S3_ACCESS_KEY    = AKIA****************
+# @markdown S3_SECRET_KEY    = ****************************************
+# @markdown S3_BUCKET_NAME   = my-leecher-bucket
+# @markdown S3_ENDPOINT_URL  =                          ← LEAVE EMPTY for AWS
+# @markdown S3_REGION        = us-east-1                ← bucket's region
+# @markdown ```
+# @markdown
+# @markdown #### 🟩 Wasabi (most popular for Colab — no egress fees)
+# @markdown ```text
+# @markdown S3_ACCESS_KEY    = FYTC********  ← from Wasabi → Access Keys → Create New
+# @markdown S3_SECRET_KEY    = bKye************************************
+# @markdown S3_BUCKET_NAME   = my-wasabi-bucket
+# @markdown S3_ENDPOINT_URL  = https://s3.ap-northeast-1.wasabisys.com    ← match region!
+# @markdown S3_REGION        = ap-northeast-1
+# @markdown ```
+# @markdown <sub>Region table: us-east-1 / us-east-2 / us-central-1 / us-west-1 / ca-central-1 / eu-central-1 / eu-central-2 / eu-west-1 / eu-west-2 / ap-northeast-1 / ap-northeast-2 / ap-southeast-1 / ap-southeast-2. Endpoint is always <code>https://s3.&lt;region&gt;.wasabisys.com</code></sub>
+# @markdown
+# @markdown #### 🟥 Backblaze B2
+# @markdown ```text
+# @markdown S3_ACCESS_KEY    = 0026****************    ← keyID from B2 → Application Keys
+# @markdown S3_SECRET_KEY    = K002****************    ← applicationKey (shown ONCE)
+# @markdown S3_BUCKET_NAME   = my-b2-bucket
+# @markdown S3_ENDPOINT_URL  = https://s3.us-west-002.backblazeb2.com    ← from bucket page
+# @markdown S3_REGION        = us-west-002             ← region segment of endpoint
+# @markdown ```
+# @markdown
+# @markdown #### 🟧 Cloudflare R2 (zero egress fees)
+# @markdown ```text
+# @markdown S3_ACCESS_KEY    = ********************    ← R2 → Manage R2 API Tokens
+# @markdown S3_SECRET_KEY    = ****************************************
+# @markdown S3_BUCKET_NAME   = my-r2-bucket
+# @markdown S3_ENDPOINT_URL  = https://<account-id>.r2.cloudflarestorage.com
+# @markdown S3_REGION        = auto                    ← literal string "auto" — R2 quirk
+# @markdown ```
+# @markdown
+# @markdown #### 🟦 DigitalOcean Spaces
+# @markdown ```text
+# @markdown S3_ACCESS_KEY    = DO00****************
+# @markdown S3_SECRET_KEY    = ****************************************
+# @markdown S3_BUCKET_NAME   = my-do-space
+# @markdown S3_ENDPOINT_URL  = https://nyc3.digitaloceanspaces.com   ← e.g. nyc3 / sfo3 / ams3 / sgp1 / fra1
+# @markdown S3_REGION        = nyc3                                  ← match the region in URL
+# @markdown ```
+# @markdown
+# @markdown #### ⬛ MinIO / self-hosted
+# @markdown ```text
+# @markdown S3_ACCESS_KEY    = <your-access-key>
+# @markdown S3_SECRET_KEY    = <your-secret-key>
+# @markdown S3_BUCKET_NAME   = my-minio-bucket
+# @markdown S3_ENDPOINT_URL  = https://your-minio.example.com   ← public HTTPS endpoint
+# @markdown S3_REGION        = us-east-1                        ← MinIO default
+# @markdown ```
+# @markdown
+# @markdown #### 🟪 Storj DCS / Linode / Scaleway / IDrive e2 / Vultr / OVH / Yandex / Alibaba
+# @markdown ```text
+# @markdown S3_ENDPOINT_URL  = https://<provider-endpoint-from-their-docs>
+# @markdown S3_REGION        = <region-as-required-by-provider>
+# @markdown ```
+# @markdown <sub>Full list with endpoints in <a href="https://github.com/ajithvnr2001/Telegram-Leecher/blob/feat/s3-integration/docs/S3_GUIDE.md#other-s3-compatible-providers">docs/S3_GUIDE.md → Other S3-compatible providers</a></sub>
+# @markdown
+# @markdown </details>
+# @markdown
+# @markdown ---
 S3_ACCESS_KEY = ""  # @param {type: "string"}
 S3_SECRET_KEY = ""  # @param {type: "string"}
 S3_BUCKET_NAME = ""  # @param {type: "string"}
@@ -43,7 +105,79 @@ S3_REGION = "us-east-1"  # @param {type: "string"}
 # @markdown - `/s3bucket <name>` — change destination bucket on the fly
 # @markdown - `/s3prefix <folder>` — set a destination key prefix
 # @markdown
-# @markdown All S3 transfers are logged to `/content/Telegram-Leecher/s3teletracker.json` (both `uploaded` and `downloaded`).
+# @markdown <details><summary><b>📨 Click for ready-to-paste sample DM commands</b></summary>
+# @markdown
+# @markdown **Mirror an internet file → S3 (Regular)**
+# @markdown ```text
+# @markdown /s3upload
+# @markdown
+# @markdown https://speed.hetzner.de/100MB.bin
+# @markdown [test-100mb.bin]
+# @markdown ```
+# @markdown
+# @markdown **Mirror a Google Drive link → S3 (Compress)**
+# @markdown ```text
+# @markdown /s3upload
+# @markdown
+# @markdown https://drive.google.com/file/d/<file-id>/view
+# @markdown [my-archive.zip]
+# @markdown {zip-pw-if-any}
+# @markdown ```
+# @markdown
+# @markdown **Leech a single S3 object → Telegram**
+# @markdown ```text
+# @markdown /s3leech
+# @markdown
+# @markdown s3://my-bucket/Uploaded__2026-05-28_19-45-21/test-100mb.bin
+# @markdown ```
+# @markdown
+# @markdown **Leech a whole S3 folder/prefix → Telegram (zipped)**
+# @markdown ```text
+# @markdown /s3leech
+# @markdown
+# @markdown s3://my-bucket/photos/vacation-2025/
+# @markdown {gallery-pw}
+# @markdown ```
+# @markdown
+# @markdown **Copy from one S3 bucket to another**
+# @markdown ```text
+# @markdown /s3bucket destination-bucket
+# @markdown /s3upload
+# @markdown
+# @markdown s3://source-bucket/path/to/file.mkv
+# @markdown ```
+# @markdown
+# @markdown **Set a persistent S3 destination prefix, then mirror many files**
+# @markdown ```text
+# @markdown /s3prefix archive/2026-Q2
+# @markdown /s3upload
+# @markdown
+# @markdown https://example.com/a.iso
+# @markdown https://example.com/b.iso
+# @markdown https://example.com/c.iso
+# @markdown ```
+# @markdown
+# @markdown **Extract an archive that lives in S3 → mirror contents to Drive**
+# @markdown ```text
+# @markdown /gdupload
+# @markdown
+# @markdown s3://my-bucket/backups/2026-05-01.tar.gz
+# @markdown (archive_password)
+# @markdown ```
+# @markdown
+# @markdown **Big-file (>2 GB) S3 → Telegram (auto-split into <2 GB parts)**
+# @markdown ```text
+# @markdown /s3leech
+# @markdown
+# @markdown s3://my-bucket/movies/big-blockbuster-5gb.mkv
+# @markdown [Movie Title.mkv]
+# @markdown ```
+# @markdown
+# @markdown </details>
+# @markdown
+# @markdown All S3 transfers are logged to `/content/Telegram-Leecher/s3teletracker.json` with `uploaded` and `downloaded` arrays.
+# @markdown
+# @markdown 📖 In-depth provider walkthroughs (creds, IAM policy, region tables, gotchas): see <a href="https://github.com/ajithvnr2001/Telegram-Leecher/blob/feat/s3-integration/docs/S3_GUIDE.md">docs/S3_GUIDE.md</a>
 
 
 import subprocess, time, json, shutil, os
