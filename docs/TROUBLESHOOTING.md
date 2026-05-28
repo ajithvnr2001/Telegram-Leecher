@@ -118,16 +118,51 @@ import os
 os.remove('/content/Telegram-Leecher/s3teletracker.json')
 ```
 
-### How do I keep the tracker between runtimes?
-
-Colab runtimes are ephemeral. Either copy the file to Drive or back it up to S3 itself:
+If the **remote** copy is corrupt (`s3://<bucket>/s3teletracker.json`), delete that object via your provider's web console **and** the local file:
 
 ```python
-# Save to Drive
-import shutil
-shutil.copy('/content/Telegram-Leecher/s3teletracker.json',
-            '/content/drive/MyDrive/s3teletracker.json')
+import os, boto3
+os.remove('/content/Telegram-Leecher/s3teletracker.json') if os.path.exists('/content/Telegram-Leecher/s3teletracker.json') else None
+boto3.client('s3', endpoint_url='YOUR_ENDPOINT').delete_object(Bucket='YOUR_BUCKET', Key='s3teletracker.json')
 ```
+
+### How do I keep the tracker between runtimes?
+
+**You don't need to** — as of the iterate-mode update, the bot automatically mirrors the tracker to `s3://<S3_BUCKET_NAME>/s3teletracker.json` after every successful transfer. A fresh Colab runtime running the same `/s3*` command will pull the remote tracker and resume from where the previous runtime left off.
+
+If `S3_BUCKET_NAME` is empty (you only use `/s3leech` against arbitrary source buckets), set a dummy bucket value to enable persistence — any bucket your access key can write to works.
+
+### How do I force a full re-run of a bucket I've already processed?
+
+Delete the tracker. From a Colab cell:
+
+```python
+import boto3
+s3 = boto3.client('s3',
+    aws_access_key_id='YOUR_KEY',
+    aws_secret_access_key='YOUR_SECRET',
+    endpoint_url='YOUR_ENDPOINT_OR_REMOVE_FOR_AWS')
+s3.delete_object(Bucket='YOUR_BUCKET', Key='s3teletracker.json')
+```
+
+Or use the provider web console. Next `/s3upload` or `/s3leech` will start fresh.
+
+### Iterate mode didn't trigger for my whole-bucket task
+
+The bot only auto-iterates when the URI resolves to a multi-object source. A typo can produce a URI that `head_object` happens to match, sending you into bulk mode. Check that:
+
+- Source URI ends with a slash (`s3://bucket/folder/`) **or** has no key after the bucket (`s3://bucket`)
+- The bucket actually has more than one object under that prefix
+- The dump-channel message shows the line: `🔁 Iterative bucket mode » processing one object at a time, with S3-persisted tracker resume`
+
+If the line is missing, the bot decided the URI was a single object. Add a trailing slash to force prefix interpretation.
+
+### Iterate mode skipped everything (`Skipped » N   Done » 0`)
+
+Every object's `(bucket, key, size)` is already in the tracker. Either:
+
+1. The previous run completed successfully (no action needed) — verify via `s3://<bucket>/s3teletracker.json`.
+2. The objects' sizes changed but the keys didn't (unusual). Delete the relevant entries from the tracker JSON manually, or delete the whole tracker as above.
 
 ---
 

@@ -102,41 +102,171 @@ def ensure_s3_client():
 
 
 # ---------------------------------------------------------------------------
-# tracker (s3teletracker.json)
+# tracker (s3teletracker.json) — local + S3-persisted with crash-resume
 # ---------------------------------------------------------------------------
 
-def s3_track(direction: str, file_name: str, bucket: str, key: str, size: int):
-    """Append a transfer entry to ``s3teletracker.json``.
+# Key under ``S3.bucket`` where the tracker file is mirrored. This makes the
+# tracker survive Colab runtime restarts: even if the local
+# /content/Telegram-Leecher/s3teletracker.json disappears, the next bot run
+# pulls the same JSON from S3 and resume-checks pick up where they left off.
+TRACKER_KEY = "s3teletracker.json"
 
-    `direction` is one of ``"uploaded"`` (local→S3) or ``"downloaded"``
-    (S3→local). Failures here are non-fatal: tracker is best-effort.
-    """
-    path = Paths.s3_tracker
+
+def _read_local_tracker():
+    """Return the local tracker dict (with default keys), tolerant of corruption."""
     data = {"uploaded": [], "downloaded": []}
+    if not ospath.exists(Paths.s3_tracker):
+        return data
     try:
-        if ospath.exists(path):
-            with open(path, "r") as f:
-                data = json.load(f)
+        with open(Paths.s3_tracker, "r") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            data["uploaded"] = list(loaded.get("uploaded") or [])
+            data["downloaded"] = list(loaded.get("downloaded") or [])
     except Exception as e:
         logging.warning(f"S3 tracker read failed (resetting): {e}")
-        data = {"uploaded": [], "downloaded": []}
-    data.setdefault(direction, [])
-    data[direction].append(
-        {
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "file_name": file_name,
-            "bucket": bucket,
-            "key": key,
-            "size": int(size),
-            "size_human": sizeUnit(int(size)),
-            "endpoint": S3.endpoint_url or "aws",
-        }
-    )
+    return data
+
+
+def _write_local_tracker(data):
+    """Persist `data` to the local tracker JSON file."""
     try:
-        with open(path, "w") as f:
+        with open(Paths.s3_tracker, "w") as f:
             json.dump(data, f, indent=2)
     except Exception as e:
         logging.warning(f"S3 tracker write failed: {e}")
+
+
+def _entry_signature(entry):
+    """Stable identity for a tracker entry: (bucket, key, size)."""
+    return (entry.get("bucket"), entry.get("key"), int(entry.get("size") or 0))
+
+
+def _merge_entries(*lists):
+    """De-duplicate entries across lists, preserving first-seen order."""
+    seen = set()
+    out = []
+    for lst in lists:
+        for entry in lst or []:
+            sig = _entry_signature(entry)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            out.append(entry)
+    return out
+
+
+def s3_track_persist_to_remote():
+    """Upload the local tracker file to ``s3://<S3.bucket>/<TRACKER_KEY>``.
+
+    Best-effort: failures (no creds, network blip, permission denied) are
+    logged but never abort the running task. The local file is the source
+    of truth during a session; the remote copy is the durable backup.
+    """
+    if not S3.bucket or not ospath.exists(Paths.s3_tracker):
+        return
+    try:
+        client = ensure_s3_client()
+    except Exception as e:
+        logging.debug(f"S3 client unavailable for tracker persist: {e}")
+        return
+    try:
+        with open(Paths.s3_tracker, "rb") as f:
+            body = f.read()
+        client.put_object(
+            Bucket=S3.bucket,
+            Key=TRACKER_KEY,
+            Body=body,
+            ContentType="application/json",
+        )
+    except Exception as e:
+        logging.warning(f"S3 tracker persist to remote failed: {e}")
+
+
+def s3_track_load_from_remote():
+    """Download the tracker from S3 and merge with the local tracker.
+
+    Called at the start of every iterative S3 task so a fresh Colab
+    runtime can resume work that an earlier (possibly crashed) runtime
+    had already completed. Safe to call repeatedly.
+    """
+    if not S3.bucket:
+        return
+    try:
+        client = ensure_s3_client()
+    except Exception as e:
+        logging.debug(f"S3 client unavailable for tracker fetch: {e}")
+        return
+    try:
+        obj = client.get_object(Bucket=S3.bucket, Key=TRACKER_KEY)
+        body = obj["Body"].read().decode("utf-8")
+        remote = json.loads(body) if body.strip() else {}
+        if not isinstance(remote, dict):
+            remote = {}
+    except Exception as e:
+        # NoSuchKey on first run is expected — fall through silently.
+        if "NoSuchKey" not in str(type(e).__name__) and "NoSuchKey" not in str(e):
+            logging.info(f"No remote tracker yet (or fetch failed: {e}) — starting fresh")
+        return
+
+    local = _read_local_tracker()
+    merged = {
+        "uploaded": _merge_entries(local.get("uploaded"), remote.get("uploaded")),
+        "downloaded": _merge_entries(local.get("downloaded"), remote.get("downloaded")),
+    }
+    _write_local_tracker(merged)
+    logging.info(
+        f"S3 tracker loaded from s3://{S3.bucket}/{TRACKER_KEY} → "
+        f"{len(merged['uploaded'])} uploaded, {len(merged['downloaded'])} downloaded entries"
+    )
+
+
+def is_already_tracked(direction: str, bucket: str, key: str, size=None) -> bool:
+    """Return True if (bucket, key) (and optional size) already exists in tracker.
+
+    Used by the iterative whole-bucket handlers to skip objects that an
+    earlier run already processed.
+    """
+    data = _read_local_tracker()
+    for entry in data.get(direction, []):
+        if entry.get("bucket") != bucket or entry.get("key") != key:
+            continue
+        if size is None:
+            return True
+        try:
+            if int(entry.get("size") or 0) == int(size):
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
+def s3_track(direction: str, file_name: str, bucket: str, key: str, size: int):
+    """Append a transfer entry to ``s3teletracker.json`` and mirror it to S3.
+
+    `direction` is one of ``"uploaded"`` (local→S3) or ``"downloaded"``
+    (S3→local). Failures (read, write, remote-mirror) are non-fatal:
+    tracker is best-effort and never aborts the running task.
+    """
+    data = _read_local_tracker()
+    data.setdefault(direction, [])
+    entry = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "file_name": file_name,
+        "bucket": bucket,
+        "key": key,
+        "size": int(size),
+        "size_human": sizeUnit(int(size)),
+        "endpoint": S3.endpoint_url or "aws",
+    }
+    # Skip a duplicate signature so re-runs don't bloat the tracker.
+    sig = _entry_signature(entry)
+    if not any(_entry_signature(e) == sig for e in data[direction]):
+        data[direction].append(entry)
+    _write_local_tracker(data)
+
+    # Mirror to S3 so a Colab restart can resume from where we left off.
+    s3_track_persist_to_remote()
 
 
 # ---------------------------------------------------------------------------

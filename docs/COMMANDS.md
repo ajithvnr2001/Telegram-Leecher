@@ -95,14 +95,18 @@ For `/s3leech`, the same four options control what gets pushed to Telegram after
 ### `/s3upload`
 - Mode: `s3-mirror`.
 - Sources: anything `/tupload` accepts, including `s3://...` URIs (S3-to-S3 copies are supported).
-- Destination: `s3://<S3_BUCKET_NAME>/<S3_PREFIX>/Uploaded__<timestamp>/<file>`
+- Destination: `s3://<S3_BUCKET_NAME>/<S3_PREFIX>/Uploaded__<timestamp>/<file>` (bulk mode) or `s3://<S3_BUCKET_NAME>/<S3_PREFIX>/<rel-path>` (iterate mode, preserves source folder structure).
+- **Iterative mode** auto-triggers when the source is a single multi-object S3 URI (`s3://bucket/`, `s3://bucket/prefix/`). Each source object is downloaded → uploaded → tracked → cleaned up before the next, so a 1 TB source bucket does not require 1 TB of Colab disk. See [S3_GUIDE.md → Whole-bucket iterative mode](./S3_GUIDE.md#-whole-bucket-iterative-mode--crash-resume).
+- **Crash-resume**: tracker is mirrored to `s3://<S3_BUCKET_NAME>/s3teletracker.json`; re-running the same command on a fresh Colab runtime auto-skips already-completed objects.
 - Multipart upload triggers above 64 MiB chunk size — files well above 2 GB are fine.
 - Tracker: writes an `uploaded` entry per file in `s3teletracker.json`.
 
 ### `/s3leech`
 - Mode: `leech` with S3 source.
-- Sources: `s3://bucket/key` (single object) or `s3://bucket/prefix/` (whole folder).
+- Sources: `s3://bucket/key` (single object), `s3://bucket/prefix/` (folder) or `s3://bucket` (whole bucket).
 - Use `s3:///key` (note three slashes) to reuse the configured `S3_BUCKET_NAME` as the bucket.
+- **Iterative mode** auto-triggers for prefix and whole-bucket sources (anything where `head_object` fails). Each object is downloaded → split if >2 GB → uploaded to Telegram → tracked → cleaned up before the next.
+- **Crash-resume**: same `s3teletracker.json` mechanism as `/s3upload`.
 - Destination: Telegram (the same upload pipeline used by `/tupload`).
 - Tracker: writes a `downloaded` entry per object retrieved.
 

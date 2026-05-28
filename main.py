@@ -105,6 +105,11 @@ S3_REGION = "us-east-1"  # @param {type: "string"}
 # @markdown - `/s3bucket <name>` — change destination bucket on the fly
 # @markdown - `/s3prefix <folder>` — set a destination key prefix
 # @markdown
+# @markdown #### 🔁 **Whole-bucket iterative mode + crash-resume** (auto)
+# @markdown - Point `/s3leech` or `/s3upload` at `s3://my-bucket/` or `s3://my-bucket/folder/` and the bot processes objects **one at a time** (download → split if >2 GB → upload → cleanup → next). Works for terabyte-sized buckets on a 84 GB Colab disk.
+# @markdown - The tracker is mirrored to `s3://<S3_BUCKET_NAME>/s3teletracker.json` after every transfer, so if Colab crashes mid-batch you can simply re-run the same command in a fresh runtime — the bot skips already-processed objects and resumes from where it left off.
+# @markdown - To force a full re-run, delete `s3teletracker.json` from the bucket via your provider's web console.
+# @markdown
 # @markdown <details><summary><b>📨 Click for ready-to-paste sample DM commands</b></summary>
 # @markdown
 # @markdown **Mirror an internet file → S3 (Regular)**
@@ -171,6 +176,22 @@ S3_REGION = "us-east-1"  # @param {type: "string"}
 # @markdown
 # @markdown s3://my-bucket/movies/big-blockbuster-5gb.mkv
 # @markdown [Movie Title.mkv]
+# @markdown ```
+# @markdown
+# @markdown **Whole bucket → Telegram (iterative + auto-resume on Colab crash)**
+# @markdown ```text
+# @markdown /s3leech
+# @markdown
+# @markdown s3://my-bucket/                          ← whole bucket
+# @markdown ```
+# @markdown <sub>Bot processes objects one-at-a-time, splits >2 GB to &lt;2 GB Telegram parts, persists tracker to <code>s3://&lt;S3_BUCKET_NAME&gt;/s3teletracker.json</code> after each object. If Colab crashes, just re-run the same command — already-completed objects are skipped automatically.</sub>
+# @markdown
+# @markdown **Mirror whole bucket → another bucket (S3-to-S3, iterative + resume)**
+# @markdown ```text
+# @markdown /s3bucket destination-bucket
+# @markdown /s3upload
+# @markdown
+# @markdown s3://source-bucket/folder/
 # @markdown ```
 # @markdown
 # @markdown </details>
