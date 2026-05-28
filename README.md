@@ -41,9 +41,31 @@
 - Google Drive Link ( Auto Authenticate ) ✅
 - Telegram File Link ✅
 - Video Links ( YouTube and 2000 More Sites 😉 ) ✅
+- S3 / Wasabi / B2 Object URI ( `s3://bucket/key` ) ✅
 - Torrent / Magnet Link ❌ ( Intentionally omitted 😔 )
 - Mega.nz Link ❌ ( Coming Soon ♨️)
 - GDTot, Sharer and Short Links ❌ ( Coming Soon ♨️)
+
+## **☁️ S3 / Wasabi Integration**
+
+Leech objects from S3-compatible storage to Telegram **and** mirror your downloads back to a configurable S3 bucket. Works with AWS, Wasabi, Backblaze B2, MinIO and any other S3-compatible service.
+
+**Setup (in the Colab cell):**
+- `S3_ACCESS_KEY` — your access key
+- `S3_SECRET_KEY` — your secret key
+- `S3_BUCKET_NAME` — default destination bucket
+- `S3_ENDPOINT_URL` — leave empty for AWS, or e.g. `https://s3.ap-northeast-1.wasabisys.com` for Wasabi
+- `S3_REGION` — defaults to `us-east-1`
+
+**Bot commands:**
+- `/s3upload` — Mirror downloads (from any source) to your S3 bucket. Honors all options: Regular / Compress / Extract / UnDoubleZip, custom name, zip & unzip passwords, and the same >2 GB pipeline as `/tupload`.
+- `/s3leech` — Download object(s) from `s3://bucket/key` (or a prefix `s3://bucket/folder/`) and upload them to Telegram.
+- `/s3bucket <name>` — Change the destination bucket at runtime.
+- `/s3prefix <folder/sub>` — Set (or clear) a destination key prefix when mirroring TO S3.
+
+**Tracker:** every transfer is appended to `/content/Telegram-Leecher/s3teletracker.json` with timestamp, file name, bucket, key, size and endpoint. Both `uploaded` (local→S3) and `downloaded` (S3→local) entries are recorded.
+
+**Big files:** `boto3` performs multipart upload/download automatically beyond 64 MiB chunks, so files well above 2 GB transfer in a single command.
 
 ## **🔥 Benefits**
 

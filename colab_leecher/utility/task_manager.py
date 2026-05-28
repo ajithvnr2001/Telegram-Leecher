@@ -16,6 +16,7 @@ from colab_leecher.utility.helper import (
     keyboard,
     sysINFO,
     is_google_drive,
+    is_s3,
     is_telegram,
     is_ytdl_link,
     is_mega,
@@ -28,6 +29,7 @@ from colab_leecher.utility.handler import (
     Zip_Handler,
     SendLogs,
     cancelTask,
+    S3_Mirror_Handler,
 )
 from colab_leecher.utility.variables import (
     BOT,
@@ -98,6 +100,8 @@ async def taskScheduler():
                 ida = "💬"
             elif is_google_drive(link):
                 ida = "♻️"
+            elif is_s3(link):
+                ida = "☁️"
             elif is_torrent(link):
                 ida = "🧲"
                 Messages.caution_msg = "\n\n⚠️<i><b> Torrents Are Strictly Prohibited in Google Colab</b>, Try to avoid Magnets !</i>"
@@ -172,11 +176,12 @@ async def taskScheduler():
 
     BotTimes.current_time = time()
 
-    if BOT.Mode.mode != "mirror":
-        await Do_Leech(BOT.SOURCE, is_dir, BOT.Mode.ytdl, is_zip, is_unzip, is_dualzip)
-    else:
+    if BOT.Mode.mode == "mirror":
         await Do_Mirror(BOT.SOURCE, BOT.Mode.ytdl, is_zip, is_unzip, is_dualzip)
-
+    elif BOT.Mode.mode == "s3-mirror":
+        await Do_S3_Mirror(BOT.SOURCE, BOT.Mode.ytdl, is_zip, is_unzip, is_dualzip)
+    else:
+        await Do_Leech(BOT.SOURCE, is_dir, BOT.Mode.ytdl, is_zip, is_unzip, is_dualzip)
 
 async def Do_Leech(source, is_dir, is_ytdl, is_zip, is_unzip, is_dualzip):
     if is_dir:
@@ -263,5 +268,44 @@ async def Do_Mirror(source, is_ytdl, is_zip, is_unzip, is_dualzip):
         shutil.copytree(Paths.temp_zpath, mirror_dir_)
     else:
         shutil.copytree(Paths.down_path, mirror_dir_)
+
+    await SendLogs(False)
+
+
+
+async def Do_S3_Mirror(source, is_ytdl, is_zip, is_unzip, is_dualzip):
+    """Mirror downloaded sources to a configurable S3 bucket.
+
+    Mirrors `Do_Mirror` (Google Drive) but the destination is S3.
+    Supports the full set of options exposed by other commands:
+    Regular / Compress (zip) / Extract (unzip) / UnDoubleZip, plus the
+    >2 GB pipeline (split or zip-split) when applicable upstream.
+    """
+    from colab_leecher.uploader.s3 import is_s3_configured
+
+    if not is_s3_configured():
+        await cancelTask(
+            "S3 is NOT CONFIGURED ! Set S3_ACCESS_KEY, S3_SECRET_KEY and S3_BUCKET_NAME in the Colab cell, restart the bot and try again."
+        )
+        return
+
+    await downloadManager(source, is_ytdl)
+
+    Transfer.total_down_size = getSize(Paths.down_path)
+
+    applyCustomName()
+
+    if is_zip:
+        await Zip_Handler(Paths.down_path, True, True)
+        await S3_Mirror_Handler(Paths.temp_zpath, True)
+    elif is_unzip:
+        await Unzip_Handler(Paths.down_path, True)
+        await S3_Mirror_Handler(Paths.temp_unzip_path, True)
+    elif is_dualzip:
+        await Unzip_Handler(Paths.down_path, True)
+        await Zip_Handler(Paths.temp_unzip_path, True, True)
+        await S3_Mirror_Handler(Paths.temp_zpath, True)
+    else:
+        await S3_Mirror_Handler(Paths.down_path, True)
 
     await SendLogs(False)

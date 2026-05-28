@@ -15,6 +15,14 @@ BOT_TOKEN = ""  # @param {type: "string"}
 USER_ID = 0  # @param {type: "integer"}
 DUMP_ID = 0  # @param {type: "integer"}
 
+# @markdown ---
+# @markdown ### ☁️ S3 / Wasabi Configuration *(optional — required only for `/s3upload` & `/s3leech`)*
+S3_ACCESS_KEY = ""  # @param {type: "string"}
+S3_SECRET_KEY = ""  # @param {type: "string"}
+S3_BUCKET_NAME = ""  # @param {type: "string"}
+S3_ENDPOINT_URL = ""  # @param {type: "string"}
+S3_REGION = "us-east-1"  # @param {type: "string"}
+
 
 import subprocess, time, json, shutil, os
 from IPython.display import clear_output
@@ -78,6 +86,11 @@ credentials = {
     "BOT_TOKEN": BOT_TOKEN,
     "USER_ID": USER_ID,
     "DUMP_ID": DUMP_ID,
+    "S3_ACCESS_KEY": S3_ACCESS_KEY,
+    "S3_SECRET_KEY": S3_SECRET_KEY,
+    "S3_BUCKET_NAME": S3_BUCKET_NAME,
+    "S3_ENDPOINT_URL": S3_ENDPOINT_URL,
+    "S3_REGION": S3_REGION,
 }
 
 with open('/content/Telegram-Leecher/credentials.json', 'w') as file:
