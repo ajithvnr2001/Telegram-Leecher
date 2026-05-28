@@ -10,7 +10,8 @@ Everything about the S3-compatible storage integration: how it works, every supp
 
 1. [What you can do](#what-you-can-do)
 2. [Configuration (Colab cell)](#configuration-colab-cell)
-3. **Per-provider quick-start (in depth)**
+3. **🔁 [Whole-bucket iterative mode + crash-resume](#-whole-bucket-iterative-mode--crash-resume)** ← NEW
+4. **Per-provider quick-start (in depth)**
    - [AWS S3](#aws-s3)
    - [Wasabi](#wasabi)
    - [Backblaze B2](#backblaze-b2)
@@ -18,14 +19,14 @@ Everything about the S3-compatible storage integration: how it works, every supp
    - [DigitalOcean Spaces](#digitalocean-spaces)
    - [MinIO / self-hosted](#minio--self-hosted)
    - [Storj DCS, Linode Object Storage, Scaleway, IDrive e2, Vultr…](#other-s3-compatible-providers)
-4. [URI grammar](#uri-grammar)
-5. [Worked examples (Telegram session walkthroughs)](#worked-examples-telegram-session-walkthroughs)
-6. [Tracker file (`s3teletracker.json`)](#tracker-file-s3teletrackerjson)
-7. [Multipart and big files (>2 GB)](#multipart-and-big-files-2-gb)
-8. [Behavior matrix](#behavior-matrix)
-9. [Cost & rate considerations](#cost--rate-considerations)
-10. [Security notes](#security-notes)
-11. [Quick command reference](#quick-command-reference)
+5. [URI grammar](#uri-grammar)
+6. [Worked examples (Telegram session walkthroughs)](#worked-examples-telegram-session-walkthroughs)
+7. [Tracker file (`s3teletracker.json`)](#tracker-file-s3teletrackerjson)
+8. [Multipart and big files (>2 GB)](#multipart-and-big-files-2-gb)
+9. [Behavior matrix](#behavior-matrix)
+10. [Cost & rate considerations](#cost--rate-considerations)
+11. [Security notes](#security-notes)
+12. [Quick command reference](#quick-command-reference)
 
 ---
 
@@ -65,6 +66,141 @@ When the cell starts you'll see one of:
 ```
 
 If neither line appears, S3 is fully unconfigured and the four `/s3*` commands will refuse to run with a clear error message.
+
+---
+
+## 🔁 Whole-bucket iterative mode + crash-resume
+
+When you point `/s3leech` or `/s3upload` at a **whole bucket or a prefix that contains many objects**, the bot automatically switches into **iterative mode**: instead of downloading every object first and uploading them all in bulk (which would blow Colab's 84 GB ephemeral disk for any large bucket), it processes objects **one at a time** with a clean workspace between iterations.
+
+### When iterate mode triggers
+
+Iterate mode kicks in automatically when **all** of these are true:
+
+- Exactly **one** source line in your message
+- That source is an `s3://` URI
+- The URI resolves to a prefix or whole bucket (i.e. `head_object` fails — there is no single object at that exact key)
+- Mode is `/s3leech` or `/s3upload`
+
+URIs that trigger iterate mode:
+
+```text
+s3://my-bucket                     ← whole bucket
+s3://my-bucket/                    ← whole bucket (with slash)
+s3://my-bucket/folder/             ← prefix
+s3://my-bucket/folder/2025/        ← deeper prefix
+s3:///folder/                      ← prefix in default S3_BUCKET_NAME
+```
+
+URIs that do **not** trigger iterate mode (existing single-shot flow runs):
+
+```text
+s3://my-bucket/path/to/file.zip    ← single object, head_object succeeds
+```
+
+You'll see this annotation in the dump-channel message when iterate mode is active:
+
+```text
+🔁 Iterative bucket mode » processing one object at a time, with S3-persisted tracker resume
+```
+
+### Per-object pipeline (what runs for each object)
+
+For every object in the bucket / prefix:
+
+1. **Resume check** — if the object's `(bucket, key, size)` is already in the persistent tracker (from this run **or** a previous, possibly crashed Colab runtime), it is **skipped**.
+2. **Workspace cleanup** — `down_path` / `temp_zpath` / `temp_unzip_path` / `temp_files_dir` are wiped, so peak disk usage is bounded by the **largest single source object**, not the whole bucket.
+3. **Single-object download** — boto3 multipart download (64 MiB chunks).
+4. **Upload pipeline** — runs the user-selected option (Regular / Compress / Extract / UnDoubleZip), reusing the same `Leech` / `Zip_Handler` / `Unzip_Handler` primitives used by `/tupload` and `/gdupload`. **>2 GB source objects are split into <2 GB Telegram parts via `sizeChecker` exactly like `/tupload`.**
+5. **Tracker write** — the object is recorded in `s3teletracker.json`, which is **immediately mirrored to `s3://<S3_BUCKET_NAME>/s3teletracker.json`** so a crash here loses at most one in-flight object.
+6. **Move on** to the next object.
+
+The status message in your Telegram DM updates per-iteration:
+
+```text
+🔁 ITERATIVE S3 ➜ TELEGRAM »
+
+🪣 Bucket » my-bucket
+📁 Prefix » folder/2025/
+✅ Done » 47   ⏭️ Skipped » 12   📊 Total » 250
+
+📥 OBJECT » folder/2025/photo-049.jpg
+📦 Size » 8.4 MB
+
+[progress bar from boto3 download → splitter → telegram upload…]
+```
+
+### Resume from a crash (Colab disconnect, OOM, manual stop, etc.)
+
+The tracker is the single source of truth for "what's been done". Because **every successful iteration writes both the local file *and* uploads it to S3** (see `s3_track_persist_to_remote()`), a brand-new Colab runtime can pick up exactly where the previous one left off:
+
+1. **Crash happens** — runtime dies mid-leech, after object 47 of 250 was completed and the 48th was in flight.
+2. **Restart Colab**, fill in the same form values, run the cell.
+3. **Re-issue the same command** in your Telegram DM:
+   ```text
+   /s3leech
+
+   s3://my-bucket/folder/
+   ```
+4. **First thing the bot does** is download the tracker from S3 (`s3_track_load_from_remote()`), merging it with the local file. The dump-channel status now reads:
+   ```text
+   ✅ Done » 0   ⏭️ Skipped » 47   📊 Total » 250
+   ```
+5. The bot **skips objects 1–47** (already in tracker), starts processing from object 48, and continues until the bucket is fully done.
+
+If you want to **force a full re-processing** from scratch, delete the tracker first:
+
+```python
+# In a fresh Colab cell BEFORE running the bot:
+import boto3
+s3 = boto3.client('s3',
+    aws_access_key_id='YOUR_KEY',
+    aws_secret_access_key='YOUR_SECRET',
+    endpoint_url='YOUR_ENDPOINT_OR_LEAVE_OUT_FOR_AWS')
+s3.delete_object(Bucket='YOUR_BUCKET', Key='s3teletracker.json')
+print('Tracker deleted — next /s3* command will start fresh')
+```
+
+Or via the AWS / Wasabi / R2 web console — just delete the `s3teletracker.json` object at the root of your destination bucket.
+
+### Resume scope per upload type
+
+| Type option | Resume key | Behavior |
+|---|---|---|
+| **Regular** (`/s3leech`) | `(src_bucket, src_key, size)` in `downloaded` | Skipped objects don't redownload. |
+| **Regular** (`/s3upload` from S3 source) | `(dst_bucket, dst_key, size)` in `uploaded` **and** `(src_bucket, src_key, size)` in `downloaded` | The destination check protects against renamed sources too. |
+| **Compress / Extract / UnDoubleZip** | `(src_bucket, src_key, size)` in `downloaded` | Source-side resume only — the bot can't predict every output key (split-zip volumes, extracted file count). A partially-zipped source on crash is re-zipped from scratch on retry. |
+
+### Disk pressure: what stays bounded
+
+The per-iteration workspace cleanup means peak disk usage is bounded by:
+
+```
+peak ≈ size_of_largest_single_object (Regular)
+peak ≈ size_of_largest_object × 2 (Compress / UnDoubleZip — original + zip output)
+peak ≈ size_of_largest_archive + extracted_size (Extract)
+```
+
+So a 1 TB bucket made of 1 GB objects is processable on a 84 GB Colab runtime — peak disk is ~1 GB at any moment.
+
+### Tracker file location
+
+```text
+Local (in-session)  : /content/Telegram-Leecher/s3teletracker.json
+Remote (persistent) : s3://<S3_BUCKET_NAME>/s3teletracker.json
+```
+
+The remote copy is what makes resume possible across Colab runtimes. The local copy is what the bot reads during a session for the per-iteration skip check.
+
+If `S3_BUCKET_NAME` is **not configured** (e.g. you only use `/s3leech` against random source buckets and never set a default), the tracker is **local-only** — resume still works within a single Colab session, but a Colab restart loses the progress. Configure a default bucket if you care about long-running batches surviving runtime hops.
+
+### Things that still use the bulk (non-iterative) flow
+
+- Single-object S3 URIs (`s3://bucket/file.zip`)
+- Mixed-source tasks (multiple sources in one message, e.g. an HTTP link + an S3 URI)
+- Non-S3 sources (HTTP, Drive, Telegram, yt-dlp, Mega, Terabox)
+
+Iterate mode is purely opt-in via URI shape — no separate command, no flag.
 
 ---
 
@@ -555,7 +691,12 @@ https://example.com/mystery.7z
 
 ## Tracker file (`s3teletracker.json`)
 
-Path: `/content/Telegram-Leecher/s3teletracker.json`
+Two locations:
+
+- **Local (in-session)**: `/content/Telegram-Leecher/s3teletracker.json`
+- **Remote (persistent)**: `s3://<S3_BUCKET_NAME>/s3teletracker.json`
+
+The remote copy is the durable backup that survives Colab runtime restarts. After every successful transfer, the local file is updated **and** mirrored to S3 (best-effort — failures are logged but never abort the transfer).
 
 Two top-level arrays — `uploaded` (local→S3) and `downloaded` (S3→local). Each entry:
 
@@ -574,8 +715,10 @@ Two top-level arrays — `uploaded` (local→S3) and `downloaded` (S3→local). 
 ### Tips
 
 - The file is appended in real time, so you can `cat` it during a transfer to verify progress is recorded.
+- Entries are deduplicated by `(bucket, key, size)` — re-runs of the same task won't bloat the tracker.
 - If the file becomes corrupt (manual edit, etc.) the bot resets it and continues — only the corrupt session's entries are lost.
-- Trackers persist across bot restarts inside the same Colab session. To preserve across sessions, copy the file into Drive: `cp /content/Telegram-Leecher/s3teletracker.json /content/drive/MyDrive/`.
+- If `S3_BUCKET_NAME` is empty, the remote copy is skipped and the tracker is local-only (lost on Colab restart).
+- To force a full re-processing, delete `s3teletracker.json` from the bucket (or use the snippet in [§ Whole-bucket iterative mode → Resume from a crash](#-whole-bucket-iterative-mode--crash-resume)).
 
 ---
 
@@ -629,9 +772,12 @@ Progress flows through the same `status_bar` used by every other downloader/uplo
 | `/s3leech s3://other-bucket/...` while `S3_BUCKET_NAME=my-bucket` | Source URI bucket wins; the configured default is only used by `/s3upload` and by `s3:///key` short-form URIs. |
 | `/s3leech s3:///foo` with no `S3_BUCKET_NAME` | Bot raises a clear error: "No S3 bucket specified and no default S3_BUCKET_NAME configured." |
 | Object > 2 GB | Multipart kicks in automatically; Telegram split or zip happens after the local download per the regular Settings rules. |
-| Source includes a mix of `s3://` and `https://` URIs | Each is dispatched to the right downloader and aggregated together. |
-| `/s3leech s3://bucket/folder/` | Whole prefix is mirrored under `down_path/<folder-name>/...`, then leeched/uploaded as a folder per your selected option. |
+| Source includes a mix of `s3://` and `https://` URIs | Each is dispatched to the right downloader and aggregated together. **Bulk mode** (no iterate). |
+| `/s3leech s3://bucket/folder/` | **Iterate mode** — whole prefix processed one object at a time with crash-resume. |
+| `/s3leech s3://bucket/single-file.ext` | Bulk mode — single object, no iteration needed. |
+| `/s3upload s3://other-bucket/` | Iterate mode — S3-to-S3 mirror, one object at a time. |
 | Tracker file write fails | A warning is logged but the transfer is **not** aborted (tracker is best-effort). |
+| Re-run after Colab crash | Iterate mode auto-skips already-tracked objects; bulk mode re-downloads everything. |
 
 ---
 
