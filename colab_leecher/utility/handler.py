@@ -245,12 +245,24 @@ async def SendLogs(is_leech: bool):
         else sizeUnit(Transfer.total_down_size)
     )
 
+    # Surface any parts/files that failed to upload (e.g. a split part that
+    # exceeded Telegram's 2 GB limit) so the report never falsely claims a
+    # clean COMPLETE while data is actually missing.
+    failed_note = ""
+    if getattr(Transfer, "failed_files", None):
+        failed_list = "\n".join(f"   • <code>{n}</code>" for n in Transfer.failed_files)
+        failed_note = (
+            f"\n\n<b>⚠️ {len(Transfer.failed_files)} FILE(S) FAILED TO UPLOAD »</b>\n"
+            f"{failed_list}\n<i>These were NOT delivered. Check logs / retry.</i>"
+        )
+
     last_text = (
         f"\n\n<b>#{(BOT.Mode.mode).upper()}_COMPLETE 🔥</b>\n\n"
         + f"╭<b>📛 Name » </b><code>{Messages.download_name}</code>\n"
         + f"├<b>📦 Size » </b><code>{size}</code>\n"
         + file_count
         + f"╰<b>🍃 Saved Time »</b> <code>{getTime((datetime.now() - BotTimes.start_time).seconds)}</code>"
+        + failed_note
     )
 
     if BOT.State.task_going:

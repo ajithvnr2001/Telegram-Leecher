@@ -42,6 +42,24 @@ async def upload_file(file_path, real_name):
 
     f_type = type_ if BOT.Options.stream_upload else "document"
 
+    # Guard: Telegram bot API rejects any single upload larger than 2 GB.
+    # A part this big means the splitter mis-sized it; surface a clear error
+    # instead of silently "succeeding" and reporting a bogus COMPLETE.
+    TELEGRAM_MAX = 2097152000  # 2 GB
+    try:
+        actual_size = ospath.getsize(file_path)
+    except OSError:
+        actual_size = 0
+    if actual_size > TELEGRAM_MAX:
+        msg = (
+            f"Upload SKIPPED — '{real_name}' is {actual_size / (1024**3):.2f} GiB, "
+            f"which exceeds Telegram's 2 GB limit. The splitter should have "
+            f"produced smaller parts."
+        )
+        logging.error(msg)
+        Transfer.failed_files.append(real_name)
+        return False
+
     # Upload the file
     try:
         if f_type == "video":
@@ -101,10 +119,13 @@ async def upload_file(file_path, real_name):
 
         Transfer.sent_file.append(MSG.sent_msg)
         Transfer.sent_file_names.append(real_name)
+        return True
 
     except FloodWait as e:
         logging.warning(f"FloodWait: Waiting {e.value} Seconds Before Trying Again.")
         await sleep(e.value)  # Wait dynamic FloodWait seconds before Trying Again
-        await upload_file(file_path, real_name)
+        return await upload_file(file_path, real_name)
     except Exception as e:
         logging.error(f"Error When Uploading : {e}")
+        Transfer.failed_files.append(real_name)
+        return False

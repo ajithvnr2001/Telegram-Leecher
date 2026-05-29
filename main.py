@@ -250,15 +250,55 @@ if len(str(DUMP_ID)) == 10 and "-100" not in str(DUMP_ID):
 if os.path.exists("/content/sample_data"):
     shutil.rmtree("/content/sample_data")
 
-# IMPORTANT: this MUST point to the fork that contains the S3 integration +
-# the Python 3.12 event-loop fix. The original upstream repo does NOT have
-# those changes, so cloning it brings back the old code and the
-# "RuntimeError: There is no current event loop" crash. Change REPO_URL /
-# REPO_BRANCH here if you fork it again.
+# IMPORTANT: this MUST point to the fork + branch that contains the S3
+# integration and the Python 3.12 event-loop fix. The original upstream repo
+# does NOT have those changes, so cloning it brings back the old code and the
+# "RuntimeError: There is no current event loop" crash.
+# Default to the feature branch (it always has every fix). Switch REPO_BRANCH
+# to "main" only AFTER the PR is merged into your fork's main.
 REPO_URL = "https://github.com/ajithvnr2001/Telegram-Leecher"  # @param {type:"string"}
-REPO_BRANCH = "main"  # @param {type:"string"}  ← use "main" after merging the PR, or "feat/s3-integration" before
+REPO_BRANCH = "feat/s3-integration"  # @param {type:"string"}
+
+# Always start from a clean checkout so a stale/old clone can't linger.
+subprocess.run("rm -rf /content/Telegram-Leecher", shell=True)
 cmd = f"git clone -b {REPO_BRANCH} {REPO_URL} /content/Telegram-Leecher"
 proc = subprocess.run(cmd, shell=True)
+# Fallback: if the chosen branch doesn't exist (e.g. it was deleted after a
+# merge), fall back to the default branch so the clone still succeeds.
+if not os.path.exists("/content/Telegram-Leecher/colab_leecher/__init__.py"):
+    print(f"Branch '{REPO_BRANCH}' not found — cloning default branch instead.")
+    subprocess.run("rm -rf /content/Telegram-Leecher", shell=True)
+    subprocess.run(f"git clone {REPO_URL} /content/Telegram-Leecher", shell=True)
+
+# ---------------------------------------------------------------------------
+# Event-loop safety patch (Python 3.12 + uvloop)
+# uvloop.install() swaps the event-loop policy but does NOT create a loop, and
+# Python 3.12 asyncio.get_event_loop() raises 'no current event loop' when none
+# is set — which Pyrogram's Client()/Dispatcher() hits on import. This patch
+# guarantees a loop is created+set right before the Client is built, and is
+# idempotent: it's a no-op if the cloned code already has the fix, and it
+# repairs the file even if an older/upstream revision was somehow cloned.
+# ---------------------------------------------------------------------------
+init_path = "/content/Telegram-Leecher/colab_leecher/__init__.py"
+try:
+    with open(init_path, "r") as _f:
+        _src = _f.read()
+    if "asyncio.new_event_loop()" not in _src and "colab_bot = Client(" in _src:
+        if "import asyncio" not in _src:
+            _src = "import asyncio\n" + _src
+        _src = _src.replace(
+            "colab_bot = Client(",
+            "loop = asyncio.new_event_loop()\nasyncio.set_event_loop(loop)\ncolab_bot = Client(",
+            1,
+        )
+        with open(init_path, "w") as _f:
+            _f.write(_src)
+        print("✅ Applied Python 3.12 event-loop safety patch to colab_leecher/__init__.py")
+    else:
+        print("✅ Event-loop fix already present in colab_leecher/__init__.py")
+except Exception as _e:
+    print(f"⚠️  Could not apply event-loop safety patch: {_e}")
+
 cmd = "apt update && apt install ffmpeg aria2"
 proc = subprocess.run(cmd, shell=True)
 cmd = "pip3 install -r /content/Telegram-Leecher/requirements.txt"
