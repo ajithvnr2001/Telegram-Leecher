@@ -57,6 +57,7 @@ class Transfer:
     total_down_size = 0
     sent_file = []
     sent_file_names = []
+    failed_files = []  # names of files/parts that failed to upload (e.g. >2 GB)
 
 
 class TaskError:

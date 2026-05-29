@@ -267,6 +267,7 @@ async def iterate_s3_to_telegram(uri, is_zip, is_unzip, is_dualzip):
         # existing handler so >2 GB splits, archive extraction, etc.
         # behave identically to /tupload.
         try:
+            failed_before = len(getattr(Transfer, "failed_files", []))
             if is_zip:
                 await Zip_Handler(Paths.down_path, True, True)
                 await Leech(Paths.temp_zpath, True)
@@ -279,9 +280,20 @@ async def iterate_s3_to_telegram(uri, is_zip, is_unzip, is_dualzip):
                 await Leech(Paths.temp_zpath, True)
             else:
                 await Leech(Paths.down_path, True)
-            # Mark the source object done ONLY after a successful upload
-            # round-trip, so a crash mid-upload leaves it for retry. Use
-            # the source object size so the resume check matches exactly.
+            # If any part of THIS object failed to upload, do NOT mark it
+            # done — leave it untracked so the next run retries it instead
+            # of silently skipping a partially-delivered object.
+            failed_after = len(getattr(Transfer, "failed_files", []))
+            if failed_after > failed_before:
+                logging.error(
+                    f"Object s3://{bucket}/{okey} had "
+                    f"{failed_after - failed_before} failed part(s) — NOT marking done."
+                )
+                grand_total_up += sum(Transfer.up_bytes)
+                continue
+            # Mark the source object done ONLY after a fully successful
+            # upload round-trip, so a crash mid-upload leaves it for retry.
+            # Use the source object size so the resume check matches exactly.
             s3_track("downloaded", local_name, bucket, okey, size)
             grand_total_up += sum(Transfer.up_bytes)
             processed += 1

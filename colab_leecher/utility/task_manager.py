@@ -105,6 +105,7 @@ async def taskScheduler():
     )
     Transfer.sent_file = []
     Transfer.sent_file_names = []
+    Transfer.failed_files = []
     Transfer.down_bytes = [0, 0]
     Transfer.up_bytes = [0, 0]
     Messages.download_name = ""
