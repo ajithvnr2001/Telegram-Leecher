@@ -250,7 +250,14 @@ if len(str(DUMP_ID)) == 10 and "-100" not in str(DUMP_ID):
 if os.path.exists("/content/sample_data"):
     shutil.rmtree("/content/sample_data")
 
-cmd = "git clone https://github.com/XronTrix10/Telegram-Leecher"
+# IMPORTANT: this MUST point to the fork that contains the S3 integration +
+# the Python 3.12 event-loop fix. The original upstream repo does NOT have
+# those changes, so cloning it brings back the old code and the
+# "RuntimeError: There is no current event loop" crash. Change REPO_URL /
+# REPO_BRANCH here if you fork it again.
+REPO_URL = "https://github.com/ajithvnr2001/Telegram-Leecher"  # @param {type:"string"}
+REPO_BRANCH = "main"  # @param {type:"string"}  ← use "main" after merging the PR, or "feat/s3-integration" before
+cmd = f"git clone -b {REPO_BRANCH} {REPO_URL} /content/Telegram-Leecher"
 proc = subprocess.run(cmd, shell=True)
 cmd = "apt update && apt install ffmpeg aria2"
 proc = subprocess.run(cmd, shell=True)
