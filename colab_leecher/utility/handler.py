@@ -308,3 +308,30 @@ async def SendLogs(is_leech: bool):
 
     BOT.State.started = False
     BOT.State.task_going = False
+
+
+
+async def S3_Mirror_Handler(folder_path: str, remove: bool):
+    """Top-level handler that uploads `folder_path` to S3.
+
+    Honours the same status-bar conventions as `Leech` (Telegram upload
+    handler) so the user-facing experience is identical.
+    """
+    # Local import keeps this module import-cycle free.
+    from colab_leecher.uploader.s3 import S3_Mirror
+
+    Messages.status_head = (
+        f"<b>📤 UPLOADING TO S3 » </b>\n\n<code>{Messages.download_name}</code>\n"
+    )
+    try:
+        MSG.status_msg = await MSG.status_msg.edit_text(
+            text=Messages.task_msg
+            + Messages.status_head
+            + "\n⏳ __Starting.....__"
+            + sysINFO(),
+            reply_markup=keyboard(),
+        )
+    except Exception as e:
+        logging.error(f"Error updating status bar (S3 handler): {e}")
+
+    await S3_Mirror(folder_path, remove)
