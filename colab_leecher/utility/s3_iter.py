@@ -186,7 +186,7 @@ async def iterate_s3_to_telegram(uri, is_zip, is_unzip, is_dualzip):
     # avoid any circular-import surprises at module load time.
     from colab_leecher.downlader.s3 import _download_one, _list_objects
     from colab_leecher.utility.handler import Leech, Unzip_Handler, Zip_Handler
-    from colab_leecher.uploader.s3 import s3_track_load_from_remote
+    from colab_leecher.uploader.s3 import s3_track, s3_track_load_from_remote
 
     bucket, key = _resolve_target(uri)
     if not bucket:
@@ -228,6 +228,7 @@ async def iterate_s3_to_telegram(uri, is_zip, is_unzip, is_dualzip):
 
     processed = 0
     skipped = skipped_initial
+    grand_total_up = 0  # cumulative uploaded bytes across the batch (for SendLogs)
 
     for obj in pending:
         okey = obj["Key"]
@@ -235,6 +236,10 @@ async def iterate_s3_to_telegram(uri, is_zip, is_unzip, is_dualzip):
         idx = processed + skipped + 1  # 1-based for the status line
 
         _clean_workspace()
+        # Reset per-object so the inner Telegram upload progress bar runs
+        # a clean 0→100% for each object instead of accumulating across
+        # the whole bucket. The grand total is preserved separately.
+        Transfer.up_bytes = [0, 0]
 
         local_name = ospath.basename(okey) or f"object_{idx:04d}"
         dest = ospath.join(Paths.down_path, local_name)
@@ -250,8 +255,9 @@ async def iterate_s3_to_telegram(uri, is_zip, is_unzip, is_dualzip):
         )
 
         try:
+            # track=False: don't mark done yet — only after the upload below.
             await _download_one(
-                bucket, okey, dest, size, 0, f"Object {idx}/{total}"
+                bucket, okey, dest, size, 0, f"Object {idx}/{total}", track=False
             )
         except Exception as e:
             logging.error(f"Download failed for s3://{bucket}/{okey}: {e}")
@@ -273,11 +279,20 @@ async def iterate_s3_to_telegram(uri, is_zip, is_unzip, is_dualzip):
                 await Leech(Paths.temp_zpath, True)
             else:
                 await Leech(Paths.down_path, True)
+            # Mark the source object done ONLY after a successful upload
+            # round-trip, so a crash mid-upload leaves it for retry. Use
+            # the source object size so the resume check matches exactly.
+            s3_track("downloaded", local_name, bucket, okey, size)
+            grand_total_up += sum(Transfer.up_bytes)
             processed += 1
         except Exception as e:
             logging.error(f"Upload pipeline failed for s3://{bucket}/{okey}: {e}")
             # Don't track on failure → next run retries this object.
             continue
+
+    # Restore the cumulative upload total so SendLogs reports the whole
+    # batch size (the per-object reset above zeroed it each iteration).
+    Transfer.up_bytes = [grand_total_up]
 
     # Final summary header (rendered by SendLogs which reads Messages.status_head)
     Messages.status_head = (
@@ -409,7 +424,7 @@ async def iterate_s3_to_s3(uri, is_zip, is_unzip, is_dualzip):
 
         try:
             await _download_one(
-                src_bucket, okey, local_dest, size, 0, f"Object {idx}/{total}"
+                src_bucket, okey, local_dest, size, 0, f"Object {idx}/{total}", track=False
             )
         except Exception as e:
             logging.error(f"Download failed for s3://{src_bucket}/{okey}: {e}")

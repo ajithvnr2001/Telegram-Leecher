@@ -110,9 +110,9 @@ For every object in the bucket / prefix:
 
 1. **Resume check** — if the object's `(bucket, key, size)` is already in the persistent tracker (from this run **or** a previous, possibly crashed Colab runtime), it is **skipped**.
 2. **Workspace cleanup** — `down_path` / `temp_zpath` / `temp_unzip_path` / `temp_files_dir` are wiped, so peak disk usage is bounded by the **largest single source object**, not the whole bucket.
-3. **Single-object download** — boto3 multipart download (64 MiB chunks).
+3. **Single-object download** — boto3 multipart download (64 MiB chunks). The object is **not** marked done yet (the download is internally invoked with `track=False`).
 4. **Upload pipeline** — runs the user-selected option (Regular / Compress / Extract / UnDoubleZip), reusing the same `Leech` / `Zip_Handler` / `Unzip_Handler` primitives used by `/tupload` and `/gdupload`. **>2 GB source objects are split into <2 GB Telegram parts via `sizeChecker` exactly like `/tupload`.**
-5. **Tracker write** — the object is recorded in `s3teletracker.json`, which is **immediately mirrored to `s3://<S3_BUCKET_NAME>/s3teletracker.json`** so a crash here loses at most one in-flight object.
+5. **Tracker write (only after a full round-trip)** — the object is recorded in `s3teletracker.json` **only after the download *and* the upload both succeed**, then **immediately mirrored to `s3://<S3_BUCKET_NAME>/s3teletracker.json`**. This ordering is important: if the runtime dies *during* the download or upload of an object, that object is **left untracked** so the next run **retries it** rather than skipping it. A crash therefore loses at most the work-in-progress on the single object that was mid-flight — never a half-delivered object marked "done".
 6. **Move on** to the next object.
 
 The status message in your Telegram DM updates per-iteration:
@@ -129,6 +129,8 @@ The status message in your Telegram DM updates per-iteration:
 
 [progress bar from boto3 download → splitter → telegram upload…]
 ```
+
+> **Note on the progress bar:** in iterate mode the per-object Telegram upload bar is reset for each object, so it runs a clean 0→100 % per object. The batch-level progress (how many of the whole bucket are done) is shown by the **✅ Done / ⏭️ Skipped / 📊 Total** counters in the header.
 
 ### Resume from a crash (Colab disconnect, OOM, manual stop, etc.)
 

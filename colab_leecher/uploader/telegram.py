@@ -16,15 +16,20 @@ async def progress_bar(current, total):
     elapsed_time_seconds = (datetime.now() - BotTimes.task_start).seconds
     if current > 0 and elapsed_time_seconds > 0:
         upload_speed = current / elapsed_time_seconds
-    eta = (Transfer.total_down_size - current - sum(Transfer.up_bytes)) / upload_speed
-    percentage = (current + sum(Transfer.up_bytes)) / Transfer.total_down_size * 100
+    # Guard against a zero/garbage total (e.g. an empty object) which would
+    # otherwise raise ZeroDivisionError, and clamp the derived values so the
+    # rendered bar/ETA stay sane across multi-object iterate-mode batches.
+    total_size = max(int(Transfer.total_down_size or 0), 1)
+    done_bytes = current + sum(Transfer.up_bytes)
+    eta = max(0, (total_size - done_bytes) / upload_speed)
+    percentage = max(0.0, min((done_bytes / total_size) * 100, 100.0))
     await status_bar(
         down_msg=Messages.status_head,
         speed=f"{sizeUnit(upload_speed)}/s",
         percentage=percentage,
         eta=getTime(eta),
-        done=sizeUnit(current + sum(Transfer.up_bytes)),
-        left=sizeUnit(Transfer.total_down_size),
+        done=sizeUnit(done_bytes),
+        left=sizeUnit(total_size),
         engine="Pyrofork 💥",
     )
 
