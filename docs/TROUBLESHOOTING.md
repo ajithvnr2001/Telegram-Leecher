@@ -10,7 +10,7 @@ Common errors, what they mean, and how to fix them.
 
 The Colab Open-In-Colab URL is pinned to a branch. If the badge points at `main` but the file only lives on a feature branch, GitHub returns 404 and Colab surfaces this error.
 
-**Fix:** the [README](../README.md) Colab badge currently uses `blob/feat/s3-integration`. Once that branch is merged to `main`, replace `blob/feat/s3-integration` with `blob/main` in the badge URL. Both URLs work after the merge — the branch URL keeps working as long as the branch exists.
+**Fix:** the [README](../README.md) Colab badge currently uses `blob/main`. Once that branch is merged to `main`, replace `blob/main` with `blob/main` in the badge URL. Both URLs work after the merge — the branch URL keeps working as long as the branch exists.
 
 You can always open the notebook manually in Colab via **File → Open notebook → GitHub** and pasting the repo URL.
 
