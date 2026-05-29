@@ -8,16 +8,20 @@
 
 ## **📖 Click To Open The Notebook**
 
-<a href="https://colab.research.google.com/github/ajithvnr2001/Telegram-Leecher/blob/feat/s3-integration/Telegram_Leecher.ipynb" target="_parent"><img src="https://user-images.githubusercontent.com/125879861/255389999-a0d261cf-893a-46a7-9a3d-2bb52811b997.png" alt="Open In Colab" width=200px/></a>
+<a href="https://colab.research.google.com/github/ajithvnr2001/Telegram-Leecher/blob/main/Telegram_Leecher.ipynb" target="_parent"><img src="https://user-images.githubusercontent.com/125879861/255389999-a0d261cf-893a-46a7-9a3d-2bb52811b997.png" alt="Open In Colab" width=200px/></a>
 
-> The notebook is versioned in this repo as [`Telegram_Leecher.ipynb`](./Telegram_Leecher.ipynb) and the button above opens it in Colab directly from GitHub. The link currently targets the `feat/s3-integration` branch — once that branch is merged into `main`, swap the URL segment `blob/feat/s3-integration` → `blob/main`.
+> The notebook is versioned in this repo as [`Telegram_Leecher.ipynb`](./Telegram_Leecher.ipynb) and the button above opens it in Colab directly from GitHub on the `main` branch.
 
 ## **📚 In-depth guides**
 
 - [Setup guide](./docs/SETUP.md) — Telegram, Google Drive and S3 credentials end-to-end
 - [Bot commands reference](./docs/COMMANDS.md) — every command, every option
 - [S3 / Wasabi / B2 deep dive](./docs/S3_GUIDE.md) — `/s3upload`, `/s3leech`, tracker file, multipart, examples
+- [How >2 GB splitting & upload works](./docs/SPLIT_AND_UPLOAD.md) — the splitters, the 2 GB cap, lossless video segments
+- [Architecture](./docs/ARCHITECTURE.md) — module map, task flow, where to add features
+- [FAQ](./docs/FAQ.md) — quick answers to common questions
 - [Troubleshooting](./docs/TROUBLESHOOTING.md) — common errors and fixes
+- [Contributing](./docs/CONTRIBUTING.md) — dev setup, conventions, syncing the notebook
 
 
 ## **⚡ 60-second quick start**

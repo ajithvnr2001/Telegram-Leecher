@@ -83,7 +83,7 @@ DUMP_ID = 0  # @param {type: "integer"}
 # @markdown S3_ENDPOINT_URL  = https://<provider-endpoint-from-their-docs>
 # @markdown S3_REGION        = <region-as-required-by-provider>
 # @markdown ```
-# @markdown <sub>Full list with endpoints in <a href="https://github.com/ajithvnr2001/Telegram-Leecher/blob/feat/s3-integration/docs/S3_GUIDE.md#other-s3-compatible-providers">docs/S3_GUIDE.md → Other S3-compatible providers</a></sub>
+# @markdown <sub>Full list with endpoints in <a href="https://github.com/ajithvnr2001/Telegram-Leecher/blob/main/docs/S3_GUIDE.md#other-s3-compatible-providers">docs/S3_GUIDE.md → Other S3-compatible providers</a></sub>
 # @markdown
 # @markdown </details>
 # @markdown
@@ -198,7 +198,7 @@ S3_REGION = "us-east-1"  # @param {type: "string"}
 # @markdown
 # @markdown All S3 transfers are logged to `/content/Telegram-Leecher/s3teletracker.json` with `uploaded` and `downloaded` arrays.
 # @markdown
-# @markdown 📖 In-depth provider walkthroughs (creds, IAM policy, region tables, gotchas): see <a href="https://github.com/ajithvnr2001/Telegram-Leecher/blob/feat/s3-integration/docs/S3_GUIDE.md">docs/S3_GUIDE.md</a>
+# @markdown 📖 In-depth provider walkthroughs (creds, IAM policy, region tables, gotchas): see <a href="https://github.com/ajithvnr2001/Telegram-Leecher/blob/main/docs/S3_GUIDE.md">docs/S3_GUIDE.md</a>
 
 
 import subprocess, time, json, shutil, os
@@ -254,10 +254,10 @@ if os.path.exists("/content/sample_data"):
 # integration and the Python 3.12 event-loop fix. The original upstream repo
 # does NOT have those changes, so cloning it brings back the old code and the
 # "RuntimeError: There is no current event loop" crash.
-# Default to the feature branch (it always has every fix). Switch REPO_BRANCH
-# to "main" only AFTER the PR is merged into your fork's main.
+# Default to main (all fixes are merged there). Switch REPO_BRANCH to a
+# feature branch only when testing un-merged changes.
 REPO_URL = "https://github.com/ajithvnr2001/Telegram-Leecher"  # @param {type:"string"}
-REPO_BRANCH = "feat/s3-integration"  # @param {type:"string"}
+REPO_BRANCH = "main"  # @param {type:"string"}
 
 # Always start from a clean checkout so a stale/old clone can't linger.
 subprocess.run("rm -rf /content/Telegram-Leecher", shell=True)
