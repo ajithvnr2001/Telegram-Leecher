@@ -97,8 +97,16 @@ def get_S3_Name(uri: str) -> str:
     return bucket or "S3_DOWNLOAD"
 
 
-async def _download_one(bucket: str, key: str, dest_path: str, total: int, base_done: int, num_label: str):
-    """Download a single S3 object to `dest_path` with live progress."""
+async def _download_one(bucket: str, key: str, dest_path: str, total: int, base_done: int, num_label: str, track: bool = True):
+    """Download a single S3 object to `dest_path` with live progress.
+
+    When ``track`` is True (default, used by the bulk ``s3_Download``
+    flow) a ``downloaded`` tracker entry is written as soon as the
+    download completes. The iterative whole-bucket handlers pass
+    ``track=False`` and record the object only **after** the full
+    download→process→upload round-trip succeeds, so a crash mid-upload
+    does not mark an object done (which would skip it on resume).
+    """
     client = ensure_s3_client()
     parent = ospath.dirname(dest_path)
     if parent and not ospath.exists(parent):
@@ -143,7 +151,8 @@ async def _download_one(bucket: str, key: str, dest_path: str, total: int, base_
     await fut
 
     file_size = ospath.getsize(dest_path) if ospath.exists(dest_path) else 0
-    s3_track("downloaded", ospath.basename(dest_path), bucket, key, file_size)
+    if track:
+        s3_track("downloaded", ospath.basename(dest_path), bucket, key, file_size)
     return file_size
 
 
