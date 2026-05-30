@@ -89,3 +89,39 @@ For logic-only functions (URI parsing, tracker dedup, split-size math) write a t
 ## Releasing
 
 Merge the PR into `main`. Users open the notebook from the `main` badge, which clones `main`. Because the launcher does a fresh `git clone` every run, merged changes reach users on their next run with no extra steps.
+
+---
+
+## Wiki integration
+
+The GitHub Wiki is **generated from `docs/`** — it is not edited by hand. This keeps a single source of truth.
+
+**How it works**
+
+1. You edit `docs/*.md` (and `README.md`) as normal.
+2. `scripts/build_wiki.py` converts each doc into a wiki page, rewriting inter-doc links (e.g. `./docs/S3_GUIDE.md#anchor` → `S3-Guide#anchor`) and generating `Home.md`, `_Sidebar.md`, and `_Footer.md`.
+3. The `.github/workflows/publish-wiki.yml` workflow runs that script on every push to `main` that touches `docs/`, `README.md`, or the script, then pushes the result to the `<repo>.wiki.git` repository.
+
+**Page name mapping** (see `DOC_TO_WIKI` in the script):
+
+| Repo doc | Wiki page |
+|---|---|
+| `docs/SETUP.md` | Setup |
+| `docs/COMMANDS.md` | Commands |
+| `docs/S3_GUIDE.md` | S3-Guide |
+| `docs/SPLIT_AND_UPLOAD.md` | Split-and-Upload |
+| `docs/ARCHITECTURE.md` | Architecture |
+| `docs/FAQ.md` | FAQ |
+| `docs/TROUBLESHOOTING.md` | Troubleshooting |
+| `docs/CONTRIBUTING.md` | Contributing |
+
+**One-time setup:** the wiki repo only exists after the wiki is initialised once. Go to the repo's **Wiki** tab → create the first page → **Save**. After that, the workflow can clone and push to it. (Until then, the workflow logs a clear warning and exits.)
+
+**Preview locally** before pushing:
+
+```bash
+python3 scripts/build_wiki.py --out build/wiki
+ls build/wiki/        # Home.md, Setup.md, S3-Guide.md, _Sidebar.md, …
+```
+
+`build/` is git-ignored — never commit generated pages. Add a new doc by dropping it in `docs/` and adding an entry to `DOC_TO_WIKI` (and `WIKI_ORDER` for nav) in `scripts/build_wiki.py`.

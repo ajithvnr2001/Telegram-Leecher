@@ -9,3 +9,8 @@ testing_purpose/
 __pycache__/
 
 *.session
+
+
+
+# Generated wiki pages (built by scripts/build_wiki.py, published by CI)
+build/

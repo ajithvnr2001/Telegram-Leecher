@@ -23,6 +23,8 @@
 - [Troubleshooting](./docs/TROUBLESHOOTING.md) — common errors and fixes
 - [Contributing](./docs/CONTRIBUTING.md) — dev setup, conventions, syncing the notebook
 
+> 📖 These guides are also published to the [**project Wiki**](https://github.com/ajithvnr2001/Telegram-Leecher/wiki), auto-generated from `docs/` on every push to `main`.
+
 
 ## **⚡ 60-second quick start**
 
