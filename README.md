@@ -93,6 +93,8 @@ Full reference (with sources, options, and examples for every command) lives in 
 
 DM your bot `/amusic` to download the predefined Apple Music playlist (`AM_PLAYLIST_URL`, set in the notebook) in **all five audio formats**, upload every track to Telegram, and mirror each format's download log to S3.
 
+Use `/amusic local` to download to the **Colab disk** (`/content`) instead — **no Telegram upload**; files just stay local.
+
 ### The five formats (per song)
 
 Every song yields **5 files** — one per format — **all with the same naming convention**:

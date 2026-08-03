@@ -133,6 +133,10 @@ async def taskScheduler():
             return
         Messages.dump_task += (
             f"\n\n🎵 <code>{AM_PLAYLIST_URL}</code>\n\n"
+            "💾 <i>LOCAL SAVE — files stay on the Colab disk, nothing is "
+            "uploaded to Telegram.</i>"
+            if BOT.Mode.am_local
+            else f"\n\n🎵 <code>{AM_PLAYLIST_URL}</code>\n\n"
             "📀 <i>All formats (ALAC / Atmos / AAC-LC 256 / AAC 128 / HE-AAC 64) "
             "will be downloaded to /music and uploaded to Telegram.</i>"
         )
@@ -279,19 +283,15 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
     next batch until the whole playlist is done.
     """
     from colab_leecher import AM_PLAYLIST_URL
-    from colab_leecher.downlader.apple_music import (
-        AM_MUSIC_PATH,
-        AM_LOG_DIR,
-        S3_LOG_PREFIX,
-        am_download,
-        am_completed_batches,
-        fetch_playlist_songs,
-        _am_files_snapshot,
-        _am_log_key,
-    )
+    from colab_leecher.downlader import apple_music as am_mod
     from colab_leecher.utility.handler import Leech
 
     Messages.download_name = "Apple Music Playlist"
+    local = bool(BOT.Mode.am_local)
+    if local:
+        # /amusic local → download to Colab disk instead of /music, and
+        # skip the Telegram upload step entirely.
+        am_mod.set_am_music_path(am_mod.AM_LOCAL_MUSIC_PATH)
 
     # 1) Resolve the full track list
     await MSG.status_msg.edit_text(
@@ -311,7 +311,7 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
     # 1b) Crash-resume: skip batches whose download logs are already in S3.
     #     Presence of ALL five format logs for a batch means a previous run
     #     finished that batch, so we must NOT download it again.
-    completed = am_completed_batches()
+    completed = am_mod.am_completed_batches()
     if completed:
         n_skip = sum(1 for b in range(1, total_batches + 1) if b in completed)
         logging.info("AM resume: skipping %d already-completed batch(es) found in S3", n_skip)
@@ -327,10 +327,10 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
         if batch_no in completed:
             logging.info("AM skip batch %d (already completed)", batch_no)
             continue
-        before = _am_files_snapshot()
+        before = am_mod._am_files_snapshot()
 
         # 2) Download this batch in ALL formats
-        format_logs = await am_download(batch, batch_no, total_batches)
+        format_logs = await am_mod.am_download(batch, batch_no, total_batches)
 
         # 3) Mirror each format's log to S3 for tracking (best effort)
         try:
@@ -340,17 +340,27 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
             if S3_BUCKET_NAME:
                 ensure_s3_client()
                 for name, log_path in format_logs:
-                    key = _am_log_key(name, suffix=f"-batch{batch_no:02d}")
+                    key = am_mod._am_log_key(name, suffix=f"-batch{batch_no:02d}")
                     ensure_s3_client().upload_file(log_path, S3_BUCKET_NAME, key)
                     logging.info("AM log %s mirrored to s3://%s/%s", name, S3_BUCKET_NAME, key)
         except Exception as e:
             logging.error(f"AM log mirror to S3 failed: {e}")
 
-        # 4) Upload only the tracks created by this batch
-        new_files = sorted(_am_files_snapshot() - before)
+        # 4) Upload only the tracks created by this batch (skip in local mode)
+        new_files = sorted(am_mod._am_files_snapshot() - before)
         done_files.update(new_files)
         if not new_files:
             logging.warning("Batch %d produced no new files — skipping upload", batch_no)
+            continue
+
+        if local:
+            await MSG.status_msg.edit_text(
+                text=Messages.task_msg
+                + f"<b>🎵 APPLE MUSIC » </b>\n💾 __Saved batch {batch_no}/{total_batches} "
+                f"locally — {len(new_files)} files under <code>{am_mod.AM_MUSIC_PATH}</code>__",
+                reply_markup=keyboard(),
+            )
+            logging.info("Batch %d/%d done — %d files saved locally", batch_no, total_batches, len(new_files))
             continue
 
         await MSG.status_msg.edit_text(
@@ -359,19 +369,34 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
             f"({len(new_files)} files)...__",
             reply_markup=keyboard(),
         )
-        Paths.down_path = AM_MUSIC_PATH
+        Paths.down_path = am_mod.AM_MUSIC_PATH
         for f in new_files:
             await Leech(ospath.dirname(f), False)
 
         logging.info("Batch %d/%d done — %d files uploaded", batch_no, total_batches, len(new_files))
 
-    Transfer.total_down_size = getSize(AM_MUSIC_PATH)
+    if local:
+        Transfer.total_down_size = sum(
+            (ospath.getsize(f) for f in done_files if ospath.exists(f)), 0
+        )
+    else:
+        Transfer.total_down_size = getSize(am_mod.AM_MUSIC_PATH)
 
+    done_msg = (
+        Messages.task_msg + "<b>🎵 APPLE MUSIC » </b>\n✅ __All batches finished.__"
+    )
+    if local:
+        done_msg += (
+            f"\n\n💾 <i>Saved locally under</i> <code>{am_mod.AM_MUSIC_PATH}</code>"
+        )
     await MSG.status_msg.edit_text(
-        text=Messages.task_msg + "<b>🎵 APPLE MUSIC » </b>\n✅ __All batches finished.__",
+        text=done_msg,
         reply_markup=keyboard(),
     )
-    await SendLogs(True)
+    # In local mode nothing was sent to Telegram, so there are no logs to mail.
+    if not local:
+        await SendLogs(True)
+    BOT.Mode.am_local = False
 
 async def Do_Leech(source, is_dir, is_ytdl, is_zip, is_unzip, is_dualzip):
     if is_dir:

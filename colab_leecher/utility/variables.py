@@ -34,6 +34,9 @@ class BOT:
         mode = "leech"
         type = "normal"
         ytdl = False
+        # True when /amusic local is used: download to disk (no Telegram
+        # upload). Reset on every new /amusic command.
+        am_local = False
 
     class State:
         started = False

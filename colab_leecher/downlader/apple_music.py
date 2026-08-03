@@ -50,6 +50,8 @@ from colab_leecher import S3_BUCKET_NAME
 
 
 AM_MUSIC_PATH = "/music"  # new path where all Apple Music formats land
+# /amusic local saves everything here instead (Colab disk, no Telegram upload).
+AM_LOCAL_MUSIC_PATH = "/content"
 AM_TOOLS_PATH = "/content/am-tools"
 
 AM_TOOL_WRAPPER_URL = (
@@ -109,6 +111,20 @@ AM_WRAPPER_ENV = {"AM_BIND_PROC": "1", "AM_NO_PIDNS": "1"}
 def is_am_playlist(url: str) -> bool:
     """True for https://music.apple.com/<cc>/playlist/<name>/<id> links."""
     return "music.apple.com" in url and "/playlist/" in url
+
+
+def set_am_music_path(path: str):
+    """Point the AM working directory at ``path`` and derive the log/config
+    sub-paths from it.
+
+    The default is /music (AM_MUSIC_PATH). ``/amusic local`` switches it to
+    /content (AM_LOCAL_MUSIC_PATH) so everything is saved to the Colab disk
+    instead of the tmpfs /music mount and nothing is uploaded to Telegram.
+    """
+    global AM_MUSIC_PATH, AM_LOG_DIR, AM_CONFIG_PATH
+    AM_MUSIC_PATH = path
+    AM_LOG_DIR = ospath.join(path, "am-logs")
+    AM_CONFIG_PATH = ospath.join(path, "config.yaml")
 
 
 def _am_tools_ready() -> bool:
