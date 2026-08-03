@@ -320,7 +320,7 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
             if S3_BUCKET_NAME:
                 ensure_s3_client()
                 for name, log_path in format_logs:
-                    key = f"music-logs/{name.lower()}.log"
+                    key = f"music-logs/{name.lower()}-batch{batch_no:02d}.log"
                     ensure_s3_client().upload_file(log_path, S3_BUCKET_NAME, key)
                     logging.info("AM log %s mirrored to s3://%s/%s", name, S3_BUCKET_NAME, key)
         except Exception as e:
