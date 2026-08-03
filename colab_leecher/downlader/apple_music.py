@@ -104,10 +104,14 @@ def _am_tools_ready() -> bool:
 async def _am_update_status(head: str):
     Messages.status_head = head
     try:
+        text = Messages.task_msg + head + sysINFO()
+        if getattr(_am_update_status, "last_text", None) == text:
+            return
         MSG.status_msg = await MSG.status_msg.edit_text(
-            text=Messages.task_msg + head + sysINFO(),
+            text=text,
             reply_markup=keyboard(),
         )
+        _am_update_status.last_text = text
     except Exception as e:
         logging.error(f"AM status update failed: {e}")
 
