@@ -16,6 +16,7 @@
 
 - [Setup guide](./docs/SETUP.md) — Telegram, Google Drive and S3 credentials end-to-end
 - [Bot commands reference](./docs/COMMANDS.md) — every command, every option
+- [Apple Music deep dive](./docs/APPLE_MUSIC.md) — `/amusic` flow, formats, unified naming convention, batch processing
 - [S3 / Wasabi / B2 deep dive](./docs/S3_GUIDE.md) — `/s3upload`, `/s3leech`, tracker file, multipart, examples
 - [How >2 GB splitting & upload works](./docs/SPLIT_AND_UPLOAD.md) — the splitters, the 2 GB cap, lossless video segments
 - [Architecture](./docs/ARCHITECTURE.md) — module map, task flow, where to add features
@@ -42,6 +43,7 @@
 | `/gdupload` | Mirror to Google Drive |
 | `/ytupload` | Force the yt-dlp pipeline |
 | `/drupload` | Leech a local Colab folder |
+| `/amusic` | **NEW** — Download an Apple Music playlist in all 5 formats with a unified naming convention |
 | `/s3upload` | **NEW** — Mirror downloads to your S3 / Wasabi bucket |
 | `/s3leech` | **NEW** — Leech `s3://bucket/key` (or `s3://bucket/folder/`) to Telegram |
 | `/s3bucket <name>` | **NEW** — Change destination S3 bucket on the fly |
@@ -86,6 +88,42 @@ Full reference (with sources, options, and examples for every command) lives in 
 - Torrent / Magnet Link ❌ ( Intentionally omitted 😔 )
 - Mega.nz Link ❌ ( Coming Soon ♨️)
 - GDTot, Sharer and Short Links ❌ ( Coming Soon ♨️)
+
+## **🎵 Apple Music Integration**
+
+DM your bot `/amusic` to download the predefined Apple Music playlist (`AM_PLAYLIST_URL`, set in the notebook) in **all five audio formats**, upload every track to Telegram, and mirror each format's download log to S3.
+
+### The five formats (per song)
+
+Every song yields **5 files** — one per format — **all with the same naming convention**:
+
+```
+01.KangalIrandal.ALAC.Lossless.m4a     (Apple Lossless, ALAC)
+01.KangalIrandal.ATMOS.Dolby.m4a       (Dolby Atmos / E-AC-3)
+01.KangalIrandal.AAC.256Kbps.m4a       (AAC-LC 256)
+01.KangalIrandal.AAC.128Kbps.m4a       (AAC 128)
+01.KangalIrandal.AAC.64Kbps.m4a        (HE-AAC 64)
+```
+
+The universal file-name pattern is `{SongNumber}.{SongName}.{FORMAT}.{VARIANT}.m4a` — the same pattern across every format, so files from different formats are distinguishable at a glance. Music Videos are skipped.
+
+### Batch processing
+
+The playlist is processed in **batches of 5 songs** (`batch_size = 5` in `task_manager.py`). For each batch:
+
+1. Download the 5 songs in all 5 formats (`am_download`).
+2. Upload only the newly produced files to Telegram via the standard Leech pipeline (already-downloaded files are skipped).
+3. Mirror the per-format logs to `s3://<bucket>/music-logs/<format>-batchNN.log`.
+
+All output lands under `/music` (ALAC → `AM-DL downloads/`, Atmos → `AM-DL-Atmos downloads/`, AAC →`AM-DL-AAC downloads/`).
+
+### Requirements
+
+- **`AM_PLAYLIST_URL`** — the Apple Music playlist to download.
+- **`AM_MEDIA_TOKEN`** — your Apple Music `media-user-token` (needed for lossless/Atmos/AAC from an active subscription).
+- The am-downloader toolchain (decryption wrapper + binary) is fetched automatically from the configured S3 bucket on the first `/amusic` run — no manual install.
+
+Details, flags and troubleshooting in [APPLE_MUSIC.md](./docs/APPLE_MUSIC.md).
 
 ## **☁️ S3 / Wasabi Integration**
 

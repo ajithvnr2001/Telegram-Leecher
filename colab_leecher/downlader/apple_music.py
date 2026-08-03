@@ -13,10 +13,14 @@ Adds a /amusic command that:
        - AAC 128         (--aac --aac-type aac-128)
        - HE-AAC 64       (--aac --aac-type he-aac-64)
      Music Videos are skipped entirely (matching the process rules).
-  2. Saves everything under /music (AM_MUSIC_PATH).
-  3. Uploads every downloaded track to Telegram (via the standard Leech
+  2. Names every file with the SAME convention across all formats:
+        {SongNumber}.{SongName}.{FORMAT}.{VARIANT}.m4a
+     e.g. 01.KangalIrandal.ALAC.Lossless.m4a, 01.KangalIrandal.AAC.256Kbps.m4a,
+     so each song downstream yields one file per format (5 files/song).
+  3. Saves everything under /music (AM_MUSIC_PATH).
+  4. Uploads every downloaded track to Telegram (via the standard Leech
      pipeline).
-  4. Mirrors each format's download log to S3 (music-logs/) for tracking.
+  5. Mirrors each format's download log to S3 (music-logs/) for tracking.
 
 Requirements on the Colab VM (set up automatically):
   - wrapper (https://github.com/WorldObservationLog/wrapper) decryption
@@ -58,30 +62,36 @@ AM_TOOL_DOWNLOADER_URL = (
 # the "am-tools" prefix. Public URLs above are only a fallback.
 AM_TOOLS_S3_PREFIX = "am-tools"
 
-# Each pass = (name, extra args). Playlist URL is appended at run time.
+# Each pass = (name, extra args, song-file-format). Playlist URL is appended
+# at run time.
+#
+# Naming convention (flow.txt): every file is named
+#     {SongNumber}.{SongName}.{FORMAT}.{VARIANT}.m4a
+# so all five formats follow the SAME naming scheme and each song yields 5
+# files, e.g.:
+#     01.KangalIrandal.ALAC.Lossless.m4a
+#     01.KangalIrandal.ATMOS.Dolby.m4a
+#     01.KangalIrandal.AAC.256Kbps.m4a
+#     01.KangalIrandal.AAC.128Kbps.m4a
+#     01.KangalIrandal.AAC.64Kbps.m4a
+# The downloader appends ".m4a" itself, so the format string has no extension.
 AM_FORMATS = [
-    ("ALAC", []),
-    ("ATMOS", ["--atmos"]),
-    ("AAC-LC-256", ["--aac", "--aac-type", "aac-lc"]),
+    ("ALAC", [], "{SongNumer}.{SongName}.ALAC.Lossless"),
+    ("ATMOS", ["--atmos"], "{SongNumer}.{SongName}.ATMOS.Dolby"),
+    (
+        "AAC-LC-256",
+        ["--aac", "--aac-type", "aac-lc"],
+        "{SongNumer}.{SongName}.AAC.256Kbps",
+    ),
     (
         "AAC-128",
-        [
-            "--aac",
-            "--aac-type",
-            "aac-128",
-            "--song-file-format",
-            "{SongNumer}. {SongName} {Quality}",
-        ],
+        ["--aac", "--aac-type", "aac-128"],
+        "{SongNumer}.{SongName}.AAC.128Kbps",
     ),
     (
         "HE-AAC-64",
-        [
-            "--aac",
-            "--aac-type",
-            "he-aac-64",
-            "--song-file-format",
-            "{SongNumer}. {SongName} {Quality}",
-        ],
+        ["--aac", "--aac-type", "he-aac-64"],
+        "{SongNumer}.{SongName}.AAC.64Kbps",
     ),
 ]
 
@@ -361,7 +371,7 @@ proxy: ""
     logging.info("AM config written to %s", AM_CONFIG_PATH)
 
 
-def _run_am_pass(name: str, extra_args: list, urls: list, suffix: str = "") -> str:
+def _run_am_pass(name: str, extra_args: list, urls: list, suffix: str = "", file_format: str = "") -> str:
     """Run one am-downloader pass over a list of song URLs.
 
     Returns path to its log file.
@@ -369,7 +379,10 @@ def _run_am_pass(name: str, extra_args: list, urls: list, suffix: str = "") -> s
     makedirs(AM_LOG_DIR, exist_ok=True)
     log_name = f"{name.lower()}{suffix}.log"
     log_path = ospath.join(AM_LOG_DIR, log_name)
-    cmd = [ospath.join(AM_TOOLS_PATH, "am-downloader"), *extra_args, *urls]
+    cmd = [ospath.join(AM_TOOLS_PATH, "am-downloader"), *extra_args]
+    if file_format:
+        cmd += ["--song-file-format", file_format]
+    cmd += urls
     with open(log_path, "w") as logf:
         proc = subprocess.run(
             cmd,
@@ -413,7 +426,7 @@ async def am_download(urls: list, batch_no: int = 0, batch_total: int = 1):
     suffix = "" if batch_total <= 1 else f"-batch{batch_no:02d}"
     results = []
     total = len(AM_FORMATS)
-    for i, (name, extra_args) in enumerate(AM_FORMATS, start=1):
+    for i, (name, extra_args, file_format) in enumerate(AM_FORMATS, start=1):
         if batch_total > 1:
             head = f"<b>🎵 APPLE MUSIC » {name}</b>\n⏳ __Batch {batch_no}/{batch_total} — {len(urls)} songs in {name} format ({i}/{total})...__"
         else:
@@ -422,7 +435,7 @@ async def am_download(urls: list, batch_no: int = 0, batch_total: int = 1):
                 f"⏳ __Downloading in {name} format ({i}/{total})...__"
             )
         await _am_update_status(head)
-        log_path = _run_am_pass(name, extra_args, urls, suffix)
+        log_path = _run_am_pass(name, extra_args, urls, suffix, file_format)
         results.append((name, log_path))
         await asleep(2)
 
