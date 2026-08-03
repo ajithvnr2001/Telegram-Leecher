@@ -239,7 +239,11 @@ def _download_file(url: str, dest: str):
 
 
 def _download_tool(client, key: str, dest: str, fallback_url: str = ""):
-    """Download a tool from S3 (credentials.json bucket) or public URL fallback."""
+    """Download a tool from S3 (credentials.json bucket) or public URL fallback.
+
+    Raises a clear, actionable error when the object is missing from the
+    bucket so a wiped ``am-tools/`` prefix isn't reported as a cryptic 404.
+    """
     if client is not None:
         try:
             client.download_file(S3_BUCKET_NAME, key, dest)
@@ -247,11 +251,19 @@ def _download_tool(client, key: str, dest: str, fallback_url: str = ""):
                 return
         except Exception as e:
             logging.error(f"S3 tool download failed for {key}: {e}")
-    if not fallback_url:
-        fallback_url = (
-            AM_TOOL_WRAPPER_URL if key.endswith("wrapper-release.tar.gz") else AM_TOOL_DOWNLOADER_URL
-        )
-    _download_file(fallback_url, dest)
+    if fallback_url:
+        try:
+            _download_file(fallback_url, dest)
+            return
+        except Exception:
+            logging.error(f"Fallback download failed for {fallback_url}")
+    raise RuntimeError(
+        f"am-tools missing from s3://{S3_BUCKET_NAME}/ — object `{key}` was not "
+        "found. /amusic needs `am-tools/am-downloader`, "
+        "`am-tools/wrapper-release.tar.gz` and `am-tools/mp4decrypt` in the "
+        "bucket (see docs/APPLE_MUSIC.md, 'Toolchain' section). Re-upload them "
+        "or restore the prefix, then re-run /amusic."
+    )
 
 
 def _s3_client_or_none():

@@ -154,6 +154,22 @@ The decryption wrapper + am-downloader binaries are fetched once on the first
 `/amusic` run into `/content/am-tools/` and reused afterwards (no re-download
 on later runs or batches).
 
+### Toolchain
+
+`/amusic` needs three objects under `s3://<bucket>/am-tools/` (auto-fetched on
+first run):
+
+| Object | Purpose |
+|---|---|
+| `am-tools/am-downloader` | The downloader binary (song + MV passes) |
+| `am-tools/wrapper-release.tar.gz` | The Android decryption wrapper (ports 10020/20020/30020) |
+| `am-tools/mp4decrypt` | Bento4 binary required for the music-video pass |
+
+If any of these are missing from the bucket the task stops with a clear error
+pointing at the missing key — e.g. after the `am-tools/` prefix was wiped. To
+recover, re-upload the objects (they match the ones described in this doc) and
+run `/amusic` again.
+
 ---
 
 ## 5. How it works under the hood
