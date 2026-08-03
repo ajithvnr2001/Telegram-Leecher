@@ -318,7 +318,8 @@ async def handle_options(client, callback_query):
 
     if callback_query.data == "am-start":
         BOT.Mode.type = "normal"
-        await callback_query.message.delete()
+        if callback_query.message:
+            await callback_query.message.delete()
         MSG.status_msg = await colab_bot.send_message(
             chat_id=OWNER,
             text="#STARTING_TASK\n\n**Starting Apple Music task in a few Seconds...🦐**",
@@ -338,11 +339,12 @@ async def handle_options(client, callback_query):
 
     elif callback_query.data in ["normal", "zip", "unzip", "undzip"]:
         BOT.Mode.type = callback_query.data
-        await callback_query.message.delete()
-        await colab_bot.delete_messages(
-            chat_id=callback_query.message.chat.id,
-            message_ids=callback_query.message.reply_to_message_id,
-        )
+        if callback_query.message:
+            await callback_query.message.delete()
+            await colab_bot.delete_messages(
+                chat_id=callback_query.message.chat.id,
+                message_ids=callback_query.message.reply_to_message_id,
+            )
         MSG.status_msg = await colab_bot.send_message(
             chat_id=OWNER,
             text="#STARTING_TASK\n\n**Starting your task in a few Seconds...🦐**",
