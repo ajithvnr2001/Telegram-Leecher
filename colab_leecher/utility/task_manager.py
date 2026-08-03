@@ -280,7 +280,8 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
 
     For every batch: download all 5 formats into /music, upload the new
     tracks to Telegram, mirror the format logs to S3, then move to the
-    next batch until the whole playlist is done.
+    next batch until the whole playlist is done. Music videos (if any)
+    are downloaded afterwards, in their own batches, at max quality.
     """
     from colab_leecher import AM_PLAYLIST_URL
     from colab_leecher.downlader import apple_music as am_mod
@@ -374,6 +375,62 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
             await Leech(ospath.dirname(f), False)
 
         logging.info("Batch %d/%d done — %d files uploaded", batch_no, total_batches, len(new_files))
+
+    # 5) Music videos — download at max quality in their own batches, resume
+    #    off the mv-batchNN.log mirrors in S3.
+    try:
+        mvs = am_mod.fetch_playlist_mvs(AM_PLAYLIST_URL)
+    except Exception as e:
+        logging.warning(f"AM MV list failed ({e}) — skipping MV pass")
+        mvs = []
+    if mvs:
+        mv_batches = [mvs[i : i + batch_size] for i in range(0, len(mvs), batch_size)]
+        mv_total = len(mv_batches)
+        logging.info("AM task: %d music videos -> %d batches of %d", len(mvs), mv_total, batch_size)
+        completed_mv = am_mod.am_completed_mv_batches()
+        for mv_no, mv_batch in enumerate(mv_batches, start=1):
+            if mv_no in completed_mv:
+                logging.info("AM skip MV batch %d (already completed)", mv_no)
+                continue
+            before = am_mod._am_files_snapshot()
+            mv_log = await am_mod.am_download_mvs(mv_batch, mv_no, mv_total)
+
+            try:
+                from colab_leecher.uploader.s3 import ensure_s3_client
+                from colab_leecher import S3_BUCKET_NAME
+
+                if S3_BUCKET_NAME:
+                    key = am_mod._am_log_key(am_mod.AM_MV_FORMAT, suffix=f"-batch{mv_no:02d}")
+                    ensure_s3_client().upload_file(mv_log, S3_BUCKET_NAME, key)
+                    logging.info("AM MV log mirrored to s3://%s/%s", S3_BUCKET_NAME, key)
+            except Exception as e:
+                logging.error(f"AM MV log mirror to S3 failed: {e}")
+
+            new_files = sorted(am_mod._am_files_snapshot() - before)
+            done_files.update(new_files)
+            if not new_files:
+                logging.warning("MV batch %d produced no new files — skipping upload", mv_no)
+                continue
+            if local:
+                await MSG.status_msg.edit_text(
+                    text=Messages.task_msg
+                    + f"<b>🎵 APPLE MUSIC » {am_mod.AM_MV_FORMAT}</b>\n"
+                    f"💾 __Saved MV batch {mv_no}/{mv_total} locally — "
+                    f"{len(new_files)} files under <code>{am_mod.AM_MUSIC_PATH}</code>__",
+                    reply_markup=keyboard(),
+                )
+                logging.info("MV batch %d/%d done — %d files saved locally", mv_no, mv_total, len(new_files))
+                continue
+            await MSG.status_msg.edit_text(
+                text=Messages.task_msg
+                + f"<b>🎵 APPLE MUSIC » {am_mod.AM_MV_FORMAT}</b>\n"
+                f"📤 __Uploading MV batch {mv_no}/{mv_total} ({len(new_files)} files)...__",
+                reply_markup=keyboard(),
+            )
+            Paths.down_path = am_mod.AM_MUSIC_PATH
+            for f in new_files:
+                await Leech(ospath.dirname(f), False)
+            logging.info("MV batch %d/%d done — %d files uploaded", mv_no, mv_total, len(new_files))
 
     if local:
         Transfer.total_down_size = sum(

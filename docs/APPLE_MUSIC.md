@@ -1,14 +1,14 @@
 # Apple Music Downloader (`/amusic`)
 
 `/amusic` downloads a predefined Apple Music playlist in **all five audio
-formats**, uploads every track to Telegram, and mirrors each format's download
-log to S3.
+formats plus Music Videos**, uploads every track to Telegram, and mirrors each
+format's download log to S3.
 
 - `/amusic` — download into `/music` and **upload everything to Telegram**.
 - `/amusic local` — download into `/content` (the Colab disk) and **keep it
   local** — nothing is uploaded to Telegram. Files land under
-  `/content/AM-DL downloads/`, `/content/AM-DL-Atmos downloads/` and
-  `/content/AM-DL-AAC downloads/`.
+  `/content/AM-DL downloads/`, `/content/AM-DL-Atmos downloads/`,
+  `/content/AM-DL-AAC downloads/` and `/content/AM-DL-MV downloads/`.
 
 This document covers the end-to-end flow, the unified naming convention, batch
 processing, configuration, and troubleshooting.
@@ -28,11 +28,15 @@ Sending `/amusic` to the bot triggers `Do_AM_Music` in
 4. Uploads only the **newly produced** files to Telegram.
 5. Mirrors each format's log to `s3://<bucket>/music-logs/<format>-batchNN.log`.
 6. Moves to the next batch until the whole playlist is done.
+7. **Music videos** in the playlist (musicVideo items) are downloaded
+   afterwards in their own batches at **max quality** (mv-max 2160,
+   mv-audio-type atmos) — they land under `AM-DL-MV downloads/` as `.mp4`.
 
 **Crash-resume:** before the first batch, the bot scans S3 for existing
 `music-logs/<format>-batchNN.log` objects. Any batch that already has **all five
 format logs** in S3 is considered finished by a previous run and is **skipped**
 on the next `/amusic`, so a Colab restart never re-downloads completed batches.
+The MV pass resumes independently off `music-logs/mv-batchNN.log`.
 
 **Local mode:** `/amusic local` switches the working directory to `/content`
 via `set_am_music_path()` (in `apple_music.py`) and skips the `Leech` upload
@@ -48,6 +52,13 @@ just stay on the Colab disk.
                  ├─ snapshot diff              → only new files
                  ├─ Leech(each new file)       → upload to Telegram
                  └─ mirror logs → S3 music-logs/
+  └─ fetch_playlist_mvs(AM_PLAYLIST_URL)       → N music videos
+       └─ batches of 5
+            └─ per batch:
+                 ├─ am_download_mvs(batch)     → MV at max quality
+                 ├─ snapshot diff              → only new files
+                 ├─ Leech(each new file)       → upload to Telegram
+                 └─ mirror log → S3 music-logs/mv-batchNN.log
 ```
 
 ---
