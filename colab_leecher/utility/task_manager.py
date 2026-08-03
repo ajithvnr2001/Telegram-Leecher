@@ -291,7 +291,7 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
     Messages.download_name = "Apple Music Playlist"
 
     # 1) Resolve the full track list
-    await Messages.status_msg.edit_text(
+    await MSG.status_msg.edit_text(
         text=Messages.task_msg
         + "<b>🎵 APPLE MUSIC » </b>\n⏳ __Reading playlist...__",
         reply_markup=keyboard(),
@@ -333,7 +333,7 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
             logging.warning("Batch %d produced no new files — skipping upload", batch_no)
             continue
 
-        await Messages.status_msg.edit_text(
+        await MSG.status_msg.edit_text(
             text=Messages.task_msg
             + f"<b>🎵 APPLE MUSIC » </b>\n📤 __Uploading batch {batch_no}/{total_batches} "
             f"({len(new_files)} files)...__",
@@ -347,7 +347,7 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
 
     Transfer.total_down_size = getSize(AM_MUSIC_PATH)
 
-    await Messages.status_msg.edit_text(
+    await MSG.status_msg.edit_text(
         text=Messages.task_msg + "<b>🎵 APPLE MUSIC » </b>\n✅ __All batches finished.__",
         reply_markup=keyboard(),
     )
