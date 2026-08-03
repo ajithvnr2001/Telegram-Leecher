@@ -299,7 +299,7 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
         + "<b>🎵 APPLE MUSIC » </b>\n⏳ __Reading playlist...__",
         reply_markup=keyboard(),
     )
-    songs = fetch_playlist_songs(AM_PLAYLIST_URL)
+    songs = am_mod.fetch_playlist_songs(AM_PLAYLIST_URL)
     total_songs = len(songs)
     batch_size = 5
     batches = [
