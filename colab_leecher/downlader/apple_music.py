@@ -248,28 +248,46 @@ def _am_wrapper_running() -> bool:
 
 
 def start_am_wrapper():
-    """Start the decryption wrapper in the background (ports 10020/20020/30020)."""
+    """Start the decryption wrapper in the background (ports 10020/20020/30020).
+
+    The Android build sometimes fails its first devToken fetch (transient);
+    retry a few times before giving up.
+    """
     if _am_wrapper_running():
         logging.info("AM wrapper already running.")
         return
     wr_dir = ospath.join(AM_TOOLS_PATH, "wrapper-release")
-    logf = open(ospath.join(AM_TOOLS_PATH, "wrapper.log"), "w")
-    subprocess.Popen(
-        AM_WRAPPER_CMD,
-        cwd=wr_dir,
-        shell=True,
-        stdout=logf,
-        stderr=logf,
-        start_new_session=True,
-        env={**os.environ, **AM_WRAPPER_ENV},
-    )
-    for _ in range(30):
-        sleep(2)
-        if _am_wrapper_running():
-            logging.info("AM wrapper started OK.")
-            return
+    last_log = ""
+    for attempt in range(4):
+        log_path = ospath.join(AM_TOOLS_PATH, f"wrapper.log")
+        logf = open(log_path, "w")
+        subprocess.Popen(
+            AM_WRAPPER_CMD,
+            cwd=wr_dir,
+            shell=True,
+            stdout=logf,
+            stderr=logf,
+            start_new_session=True,
+            env={**os.environ, **AM_WRAPPER_ENV},
+        )
+        for _ in range(30):
+            sleep(2)
+            if _am_wrapper_running():
+                logging.info("AM wrapper started OK (attempt %s).", attempt + 1)
+                return
+        # not up: kill any leftover child and retry
+        subprocess.run(["pkill", "-f", "system/bin/main"], check=False)
+        subprocess.run(["pkill", "-f", "wrapper -H"], check=False)
+        sleep(3)
+        try:
+            with open(log_path) as f:
+                last_log = f.read()[-800:]
+        except OSError:
+            last_log = ""
+        logging.warning("AM wrapper attempt %s failed to open port.", attempt + 1)
     raise RuntimeError(
-        "AM wrapper failed to start. Check /content/am-tools/wrapper.log"
+        "AM wrapper failed to start after 4 attempts. "
+        f"Last wrapper.log:\n{last_log}"
     )
 
 
