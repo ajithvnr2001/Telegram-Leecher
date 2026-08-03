@@ -138,6 +138,64 @@ async def s3_leech_cmd(client, message):
     src_request_msg = await task_starter(message, text)
 
 
+@colab_bot.on_message(filters.command("amusic") & filters.private)
+async def am_music_cmd(client, message):
+    """Download the predefined Apple Music playlist in ALL formats to /music,
+    then upload everything to Telegram."""
+    global BOT, src_request_msg
+    from colab_leecher import AM_PLAYLIST_URL, AM_MEDIA_TOKEN
+    from colab_leecher.downlader.apple_music import is_am_playlist
+
+    if not AM_PLAYLIST_URL:
+        msg = await message.reply_text(
+            "⚠️ <b>Apple Music playlist not set.</b>\n\nSet <code>AM_PLAYLIST_URL</code> "
+            "(and <code>AM_MEDIA_TOKEN</code>) in the Colab notebook cell, then restart "
+            "the bot.",
+            quote=True,
+        )
+        await sleep(15)
+        await message_deleter(message, msg)
+        return
+
+    if not AM_MEDIA_TOKEN:
+        msg = await message.reply_text(
+            "⚠️ <b>Apple Music token missing.</b>\n\nSet <code>AM_MEDIA_TOKEN</code> in "
+            "the Colab notebook cell, then restart the bot.",
+            quote=True,
+        )
+        await sleep(15)
+        await message_deleter(message, msg)
+        return
+
+    if not is_am_playlist(AM_PLAYLIST_URL):
+        msg = await message.reply_text(
+            "⚠️ <b>AM_PLAYLIST_URL is not a valid Apple Music playlist link.</b>\n\n"
+            f"Current value: <code>{AM_PLAYLIST_URL}</code>",
+            quote=True,
+        )
+        await sleep(15)
+        await message_deleter(message, msg)
+        return
+
+    BOT.Mode.mode = "am-music"
+    BOT.Mode.ytdl = False
+
+    text = (
+        "<b>🎵 APPLE MUSIC » </b>\n\n"
+        "The predefined playlist will be downloaded in <b>ALL formats</b> "
+        "(ALAC, Dolby Atmos, AAC-LC 256, AAC 128, HE-AAC 64) into "
+        "<code>/music</code>, then uploaded to Telegram.\n\n"
+        f"📀 <b>Playlist »</b> <code>{AM_PLAYLIST_URL}</code>"
+    )
+
+    await message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("▶️ START", callback_data="am-start")]]
+        ),
+    )
+
+
 @colab_bot.on_message(filters.command("s3bucket") & filters.private)
 async def s3_bucket_cmd(client, message):
     """Override the destination S3 bucket at runtime."""
@@ -258,7 +316,27 @@ async def handle_url(client, message):
 async def handle_options(client, callback_query):
     global BOT, MSG
 
-    if callback_query.data in ["normal", "zip", "unzip", "undzip"]:
+    if callback_query.data == "am-start":
+        BOT.Mode.type = "normal"
+        await callback_query.message.delete()
+        MSG.status_msg = await colab_bot.send_message(
+            chat_id=OWNER,
+            text="#STARTING_TASK\n\n**Starting Apple Music task in a few Seconds...🦐**",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("Cancel ❌", callback_data="cancel")],
+                ]
+            ),
+        )
+        BOT.State.task_going = True
+        BOT.State.started = False
+        BotTimes.start_time = datetime.now()
+        event_loop = get_event_loop()
+        BOT.TASK = event_loop.create_task(taskScheduler())  # type: ignore
+        await BOT.TASK
+        BOT.State.task_going = False
+
+    elif callback_query.data in ["normal", "zip", "unzip", "undzip"]:
         BOT.Mode.type = callback_query.data
         await callback_query.message.delete()
         await colab_bot.delete_messages(
@@ -530,6 +608,7 @@ async def help_command(client, message):
     msg = await message.reply_text(
         "Send /start To Check If I am alive 🤨\n\n"
         "Send /tupload, /gdupload, /drupload, /ytupload to start transloading 🚀\n\n"
+        "Send /amusic to download the predefined Apple Music playlist in ALL formats (ALAC / Atmos / AAC) to /music and upload to Telegram 🎵\n\n"
         "Send /s3upload to mirror downloads to your S3 / Wasabi bucket ☁️\n"
         "Send /s3leech to leech objects from S3 / Wasabi to Telegram 📥\n"
         "Send /s3bucket <code>name</code> to change the destination S3 bucket\n"

@@ -21,6 +21,10 @@ S3_BUCKET_NAME = credentials.get("S3_BUCKET_NAME", "") or ""
 S3_ENDPOINT_URL = credentials.get("S3_ENDPOINT_URL", "") or ""
 S3_REGION = credentials.get("S3_REGION", "") or "us-east-1"
 
+# Apple Music config (optional — used by /amusic)
+AM_PLAYLIST_URL = credentials.get("AM_PLAYLIST_URL", "") or ""
+AM_MEDIA_TOKEN = credentials.get("AM_MEDIA_TOKEN", "") or ""
+
 
 logging.basicConfig(level=logging.INFO)
 

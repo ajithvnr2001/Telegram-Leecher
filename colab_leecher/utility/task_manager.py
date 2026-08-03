@@ -123,6 +123,20 @@ async def taskScheduler():
         Messages.dump_task += f"\n\n📂 <code>{BOT.SOURCE[0]}</code>"
         Transfer.total_down_size = getSize(BOT.SOURCE[0])
         Messages.download_name = ospath.basename(BOT.SOURCE[0])
+    elif BOT.Mode.mode == "am-music":
+        from colab_leecher import AM_PLAYLIST_URL
+
+        if not AM_PLAYLIST_URL:
+            TaskError.state = True
+            TaskError.text = "Task Failed. Because: AM_PLAYLIST_URL is not set"
+            logging.error(TaskError.text)
+            return
+        Messages.dump_task += (
+            f"\n\n🎵 <code>{AM_PLAYLIST_URL}</code>\n\n"
+            "📀 <i>All formats (ALAC / Atmos / AAC-LC 256 / AAC 128 / HE-AAC 64) "
+            "will be downloaded to /music and uploaded to Telegram.</i>"
+        )
+        BOT.SOURCE = [AM_PLAYLIST_URL]
     else:
         for link in BOT.SOURCE:
             if is_telegram(link):
@@ -228,12 +242,18 @@ async def taskScheduler():
             await SendLogs(False)
         return
 
-    await calDownSize(BOT.SOURCE)
+    if BOT.Mode.mode != "am-music":
+        await calDownSize(BOT.SOURCE)
 
-    if not is_dir:
-        await get_d_name(BOT.SOURCE[0])
+        if not is_dir:
+            await get_d_name(BOT.SOURCE[0])
+        else:
+            Messages.download_name = ospath.basename(BOT.SOURCE[0])
     else:
-        Messages.download_name = ospath.basename(BOT.SOURCE[0])
+        from colab_leecher import AM_PLAYLIST_URL
+
+        Messages.download_name = "Apple Music Playlist"
+        _ = AM_PLAYLIST_URL
 
     if is_zip:
         Paths.down_path = ospath.join(Paths.down_path, Messages.download_name)
@@ -246,8 +266,57 @@ async def taskScheduler():
         await Do_Mirror(BOT.SOURCE, BOT.Mode.ytdl, is_zip, is_unzip, is_dualzip)
     elif BOT.Mode.mode == "s3-mirror":
         await Do_S3_Mirror(BOT.SOURCE, BOT.Mode.ytdl, is_zip, is_unzip, is_dualzip)
+    elif BOT.Mode.mode == "am-music":
+        await Do_AM_Music(is_zip, is_unzip, is_dualzip)
     else:
         await Do_Leech(BOT.SOURCE, is_dir, BOT.Mode.ytdl, is_zip, is_unzip, is_dualzip)
+
+async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
+    """Download the predefined Apple Music playlist in ALL formats to /music,
+    mirror each format's log to S3, then upload everything to Telegram."""
+    from colab_leecher.downlader.apple_music import (
+        AM_MUSIC_PATH,
+        am_download,
+    )
+    from colab_leecher.utility.handler import Leech
+
+    Messages.download_name = "Apple Music Playlist"
+
+    # 1) Download all formats into /music
+    format_logs = await am_download(AM_PLAYLIST_URL)
+
+    # 2) Mirror each format's log to S3 for tracking (best effort)
+    try:
+        from colab_leecher.uploader.s3 import ensure_s3_client
+        from colab_leecher import S3_BUCKET_NAME, S3_REGION
+
+        if S3_BUCKET_NAME:
+            ensure_s3_client()
+            for name, log_path in format_logs:
+                key = f"music-logs/{name.lower()}.log"
+                ensure_s3_client().upload_file(log_path, S3_BUCKET_NAME, key)
+                logging.info("AM log %s mirrored to s3://%s/%s", name, S3_BUCKET_NAME, key)
+    except Exception as e:
+        logging.error(f"AM log mirror to S3 failed: {e}")
+
+    Transfer.total_down_size = getSize(AM_MUSIC_PATH)
+
+    # 3) Upload every downloaded track to Telegram
+    if is_zip:
+        await Zip_Handler(AM_MUSIC_PATH, True, False)
+        await Leech(Paths.temp_zpath, True)
+    elif is_unzip:
+        await Unzip_Handler(AM_MUSIC_PATH, False)
+        await Leech(Paths.temp_unzip_path, True)
+    elif is_dualzip:
+        await Unzip_Handler(AM_MUSIC_PATH, False)
+        await Zip_Handler(Paths.temp_unzip_path, True, True)
+        await Leech(Paths.temp_zpath, True)
+    else:
+        Paths.down_path = AM_MUSIC_PATH
+        await Leech(AM_MUSIC_PATH, False)
+
+    await SendLogs(True)
 
 async def Do_Leech(source, is_dir, is_ytdl, is_zip, is_unzip, is_dualzip):
     if is_dir:
