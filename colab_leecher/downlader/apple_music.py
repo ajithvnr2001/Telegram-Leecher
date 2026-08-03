@@ -87,6 +87,7 @@ AM_FORMATS = [
 AM_LOG_DIR = ospath.join(AM_MUSIC_PATH, "am-logs")
 AM_CONFIG_PATH = ospath.join(AM_MUSIC_PATH, "config.yaml")
 AM_WRAPPER_CMD = "./wrapper -H 0.0.0.0 -B rootfs/data/data/com.apple.android.music/files"
+AM_WRAPPER_ENV = {"AM_BIND_PROC": "1", "AM_NO_PIDNS": "1"}
 
 
 def is_am_playlist(url: str) -> bool:
@@ -216,6 +217,7 @@ def start_am_wrapper():
         stdout=logf,
         stderr=logf,
         start_new_session=True,
+        env={**os.environ, **AM_WRAPPER_ENV},
     )
     for _ in range(30):
         sleep(2)
