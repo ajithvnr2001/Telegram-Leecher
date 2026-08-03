@@ -96,6 +96,11 @@ AM_FORMATS = [
 ]
 
 AM_LOG_DIR = ospath.join(AM_MUSIC_PATH, "am-logs")
+# Every format log is also mirrored to S3 under this key prefix
+# (music-logs/<format>-batchNN.log). It doubles as the resume tracker:
+# if a batch has ALL of its format logs in S3, that batch was finished in
+# a previous run and is skipped on the next one.
+S3_LOG_PREFIX = "music-logs"
 AM_CONFIG_PATH = ospath.join(AM_MUSIC_PATH, "config.yaml")
 AM_WRAPPER_CMD = "./wrapper -H 0.0.0.0 -B rootfs/data/data/com.apple.android.music/files"
 AM_WRAPPER_ENV = {"AM_BIND_PROC": "1", "AM_NO_PIDNS": "1"}
@@ -407,6 +412,63 @@ def _am_files_snapshot() -> set:
         for f in files:
             out.add(ospath.join(root, f))
     return out
+
+
+def _am_log_key(name: str, suffix: str = "") -> str:
+    """S3 object key for one format's download log.
+
+    Mirrors the on-disk name (name.lower() + optional -batchNN suffix) so
+    the resume scan can tie an S3 object back to a concrete batch/format.
+    """
+    return f"{S3_LOG_PREFIX}/{name.lower()}{suffix}.log"
+
+
+def am_completed_batches() -> set:
+    """Batch numbers (int) already finished in a PREVIOUS run in S3.
+
+    A batch counts as completed when every one of the AM_FORMATS has its
+    mirror of ``music-logs/<format>-batchNN.log`` in the bucket:
+
+        AM pass ALAC finished     -> music-logs/alac-batch01.log
+        AM pass ATMOS finished    -> music-logs/atmos-batch01.log
+        ...
+
+    These objects are written AFTER a format pass finishes inside
+    ``Do_AM_Music``, so their presence means the download itself was
+    completed and the log made its way to S3. Re-running /amusic then
+    skips those batches instead of restarting from scratch.
+    """
+    from colab_leecher.uploader.s3 import ensure_s3_client
+
+    batch_to_formats = {}
+    try:
+        client = ensure_s3_client()
+    except Exception as e:
+        logging.error(f"AM resume: S3 client init failed ({e}) — will start from batch 1")
+        return set()
+
+    try:
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(
+            Bucket=S3_BUCKET_NAME, Prefix=f"{S3_LOG_PREFIX}/"
+        ):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                m = re.match(
+                    rf"^{re.escape(S3_LOG_PREFIX)}/(.+?)(?:-batch(\d+))?\.log$",
+                    key,
+                )
+                if not m:
+                    continue
+                fmt = m.group(1)
+                batch = int(m.group(2)) if m.group(2) else 0
+                batch_to_formats.setdefault(batch, set()).add(fmt)
+    except Exception as e:
+        logging.error(f"AM resume: S3 log scan failed ({e})")
+        return set()
+
+    required = {name.lower() for name, _, _ in AM_FORMATS}
+    return {batch for batch, fmts in batch_to_formats.items() if required.issubset(fmts)}
 
 
 async def am_download(urls: list, batch_no: int = 0, batch_total: int = 1):

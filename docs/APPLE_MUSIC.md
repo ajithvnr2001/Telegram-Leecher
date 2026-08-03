@@ -23,6 +23,11 @@ Sending `/amusic` to the bot triggers `Do_AM_Music` in
 5. Mirrors each format's log to `s3://<bucket>/music-logs/<format>-batchNN.log`.
 6. Moves to the next batch until the whole playlist is done.
 
+**Crash-resume:** before the first batch, the bot scans S3 for existing
+`music-logs/<format>-batchNN.log` objects. Any batch that already has **all five
+format logs** in S3 is considered finished by a previous run and is **skipped**
+on the next `/amusic`, so a Colab restart never re-downloads completed batches.
+
 ```
 /amusic
   └─ fetch_playlist_songs(AM_PLAYLIST_URL)     → 99 songs
@@ -147,6 +152,9 @@ on later runs or batches).
    uploaded since they're new files under `/music`).
 7. **S3 log mirror** — every format log is copied to
    `s3://<bucket>/music-logs/<format>-batchNN.log`.
+8. **Resume scan** — `am_completed_batches()` lists the `music-logs/` prefix;
+   a batch with all five `<format>-batchNN.log` keys present is skipped on
+   re-run (see `colab_leecher/downlader/apple_music.py`).
 
 ---
 
