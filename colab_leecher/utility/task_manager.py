@@ -282,9 +282,12 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
     from colab_leecher.downlader.apple_music import (
         AM_MUSIC_PATH,
         AM_LOG_DIR,
+        S3_LOG_PREFIX,
         am_download,
+        am_completed_batches,
         fetch_playlist_songs,
         _am_files_snapshot,
+        _am_log_key,
     )
     from colab_leecher.utility.handler import Leech
 
@@ -305,8 +308,25 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
     total_batches = len(batches)
     logging.info("AM task: %d songs -> %d batches of %d", total_songs, total_batches, batch_size)
 
+    # 1b) Crash-resume: skip batches whose download logs are already in S3.
+    #     Presence of ALL five format logs for a batch means a previous run
+    #     finished that batch, so we must NOT download it again.
+    completed = am_completed_batches()
+    if completed:
+        n_skip = sum(1 for b in range(1, total_batches + 1) if b in completed)
+        logging.info("AM resume: skipping %d already-completed batch(es) found in S3", n_skip)
+        await MSG.status_msg.edit_text(
+            text=Messages.task_msg
+            + f"<b>🎵 APPLE MUSIC » </b>\n🔁 <i>Resuming — {n_skip} batch(es) already done"
+            f" (0/{total_batches} remaining).</i>",
+            reply_markup=keyboard(),
+        )
+
     done_files = set()
     for batch_no, batch in enumerate(batches, start=1):
+        if batch_no in completed:
+            logging.info("AM skip batch %d (already completed)", batch_no)
+            continue
         before = _am_files_snapshot()
 
         # 2) Download this batch in ALL formats
@@ -320,7 +340,7 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
             if S3_BUCKET_NAME:
                 ensure_s3_client()
                 for name, log_path in format_logs:
-                    key = f"music-logs/{name.lower()}-batch{batch_no:02d}.log"
+                    key = _am_log_key(name, suffix=f"-batch{batch_no:02d}")
                     ensure_s3_client().upload_file(log_path, S3_BUCKET_NAME, key)
                     logging.info("AM log %s mirrored to s3://%s/%s", name, S3_BUCKET_NAME, key)
         except Exception as e:
