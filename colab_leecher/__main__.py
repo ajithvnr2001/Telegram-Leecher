@@ -140,11 +140,16 @@ async def s3_leech_cmd(client, message):
 
 @colab_bot.on_message(filters.command("amusic") & filters.private)
 async def am_music_cmd(client, message):
-    """Download the predefined Apple Music playlist in ALL formats to /music,
-    then upload everything to Telegram."""
+    """Download the predefined Apple Music playlist in ALL formats.
+
+    `/amusic`        → download to /music and upload everything to Telegram
+    `/amusic local`  → download to /content (Colab disk) only, no upload
+    """
     global BOT, src_request_msg
     from colab_leecher import AM_PLAYLIST_URL, AM_MEDIA_TOKEN
     from colab_leecher.downlader.apple_music import is_am_playlist
+
+    BOT.Mode.am_local = "local" in [a.lower() for a in message.command[1:]]
 
     if not AM_PLAYLIST_URL:
         msg = await message.reply_text(
@@ -180,13 +185,22 @@ async def am_music_cmd(client, message):
     BOT.Mode.mode = "am-music"
     BOT.Mode.ytdl = False
 
-    text = (
-        "<b>🎵 APPLE MUSIC » </b>\n\n"
-        "The predefined playlist will be downloaded in <b>ALL formats</b> "
-        "(ALAC, Dolby Atmos, AAC-LC 256, AAC 128, HE-AAC 64) into "
-        "<code>/music</code>, then uploaded to Telegram.\n\n"
-        f"📀 <b>Playlist »</b> <code>{AM_PLAYLIST_URL}</code>"
-    )
+    if BOT.Mode.am_local:
+        text = (
+            "<b>🎵 APPLE MUSIC » LOCAL SAVE 💾</b>\n\n"
+            "The predefined playlist will be downloaded in <b>ALL formats</b> "
+            "(ALAC, Dolby Atmos, AAC-LC 256, AAC 128, HE-AAC 64) into "
+            "<code>/content</code> — <b>no Telegram upload</b>.\n\n"
+            f"📀 <b>Playlist »</b> <code>{AM_PLAYLIST_URL}</code>"
+        )
+    else:
+        text = (
+            "<b>🎵 APPLE MUSIC » </b>\n\n"
+            "The predefined playlist will be downloaded in <b>ALL formats</b> "
+            "(ALAC, Dolby Atmos, AAC-LC 256, AAC 128, HE-AAC 64) into "
+            "<code>/music</code>, then uploaded to Telegram.\n\n"
+            f"📀 <b>Playlist »</b> <code>{AM_PLAYLIST_URL}</code>"
+        )
 
     await message.reply_text(
         text,
@@ -610,7 +624,8 @@ async def help_command(client, message):
     msg = await message.reply_text(
         "Send /start To Check If I am alive 🤨\n\n"
         "Send /tupload, /gdupload, /drupload, /ytupload to start transloading 🚀\n\n"
-        "Send /amusic to download the predefined Apple Music playlist in ALL formats (ALAC / Atmos / AAC) to /music and upload to Telegram 🎵\n\n"
+        "Send /amusic to download the predefined Apple Music playlist in ALL formats (ALAC / Atmos / AAC) to /music and upload to Telegram 🎵\n"
+        "Send /amusic <code>local</code> to save it on the Colab disk (/content) without uploading 📦\n\n"
         "Send /s3upload to mirror downloads to your S3 / Wasabi bucket ☁️\n"
         "Send /s3leech to leech objects from S3 / Wasabi to Telegram 📥\n"
         "Send /s3bucket <code>name</code> to change the destination S3 bucket\n"

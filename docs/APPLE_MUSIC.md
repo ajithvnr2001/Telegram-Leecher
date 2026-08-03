@@ -4,6 +4,12 @@
 formats**, uploads every track to Telegram, and mirrors each format's download
 log to S3.
 
+- `/amusic` — download into `/music` and **upload everything to Telegram**.
+- `/amusic local` — download into `/content` (the Colab disk) and **keep it
+  local** — nothing is uploaded to Telegram. Files land under
+  `/content/AM-DL downloads/`, `/content/AM-DL-Atmos downloads/` and
+  `/content/AM-DL-AAC downloads/`.
+
 This document covers the end-to-end flow, the unified naming convention, batch
 processing, configuration, and troubleshooting.
 
@@ -27,6 +33,11 @@ Sending `/amusic` to the bot triggers `Do_AM_Music` in
 `music-logs/<format>-batchNN.log` objects. Any batch that already has **all five
 format logs** in S3 is considered finished by a previous run and is **skipped**
 on the next `/amusic`, so a Colab restart never re-downloads completed batches.
+
+**Local mode:** `/amusic local` switches the working directory to `/content`
+via `set_am_music_path()` (in `apple_music.py`) and skips the `Leech` upload
+step — the resume logic, log mirroring and naming all work the same, the files
+just stay on the Colab disk.
 
 ```
 /amusic
