@@ -293,6 +293,7 @@ convert-check-bad-alac: false
 convert-delete-bad-alac: false
 proxy: ""
 """
+    makedirs(AM_MUSIC_PATH, exist_ok=True)
     with open(AM_CONFIG_PATH, "w") as f:
         f.write(cfg)
     logging.info("AM config written to %s", AM_CONFIG_PATH)
