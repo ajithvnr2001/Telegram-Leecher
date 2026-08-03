@@ -32,6 +32,7 @@ The prebuilt toolchain is fetched from:
 
 import os
 import re
+import json
 import shutil
 import logging
 import subprocess
@@ -99,6 +100,45 @@ def _am_tools_ready() -> bool:
     return ospath.exists(ospath.join(AM_TOOLS_PATH, "am-downloader")) and ospath.exists(
         ospath.join(AM_TOOLS_PATH, "wrapper-release", "wrapper")
     )
+
+
+def fetch_playlist_songs(playlist_url: str, limit: int = 0) -> list:
+    """Return per-song download URLs for an Apple Music playlist.
+
+    Parses the public playlist page (serialized-server-data) — no auth needed.
+    am-downloader accepts these /song/ URLs directly.
+    """
+    import urllib.request
+
+    req = urllib.request.Request(
+        playlist_url,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+    )
+    html = urllib.request.urlopen(req, timeout=60).read().decode("utf-8", "ignore")
+    m = re.search(r'serialized-server-data">(.*?)</script>', html, re.S)
+    if not m:
+        raise RuntimeError("Could not find playlist data on page")
+    data = json.loads(m.group(1))
+    songs = []
+    try:
+        sections = data["data"][0]["data"]["sections"]
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError("Unexpected playlist page structure")
+    for sec in sections:
+        if "track" not in str(sec.get("id", "")):
+            continue
+        for item in sec.get("items", []):
+            cd = item.get("contentDescriptor") or {}
+            if cd.get("kind") == "song" and (cd.get("identifiers") or {}).get("storeAdamID"):
+                songs.append(
+                    f"https://music.apple.com/in/song/{(cd['identifiers'])['storeAdamID']}"
+                )
+            elif cd.get("url") and "song" in cd.get("url", ""):
+                songs.append(cd["url"])
+    if not songs:
+        raise RuntimeError("No songs found in playlist page")
+    logging.info("AM playlist has %d songs", len(songs))
+    return songs[:limit] if limit else songs
 
 
 async def _am_update_status(head: str):
@@ -303,11 +343,15 @@ proxy: ""
     logging.info("AM config written to %s", AM_CONFIG_PATH)
 
 
-def _run_am_pass(name: str, extra_args: list, playlist_url: str) -> str:
-    """Run one am-downloader pass; returns path to its log file."""
+def _run_am_pass(name: str, extra_args: list, urls: list, suffix: str = "") -> str:
+    """Run one am-downloader pass over a list of song URLs.
+
+    Returns path to its log file.
+    """
     makedirs(AM_LOG_DIR, exist_ok=True)
-    log_path = ospath.join(AM_LOG_DIR, f"{name.lower()}.log")
-    cmd = [ospath.join(AM_TOOLS_PATH, "am-downloader"), *extra_args, playlist_url]
+    log_name = f"{name.lower()}{suffix}.log"
+    log_path = ospath.join(AM_LOG_DIR, log_name)
+    cmd = [ospath.join(AM_TOOLS_PATH, "am-downloader"), *extra_args, *urls]
     with open(log_path, "w") as logf:
         proc = subprocess.run(
             cmd,
@@ -325,8 +369,17 @@ def _run_am_pass(name: str, extra_args: list, playlist_url: str) -> str:
     return log_path
 
 
-async def am_download(playlist_url: str):
-    """Download the playlist in ALL formats into /music.
+def _am_files_snapshot() -> set:
+    """Absolute paths of every file currently under /music."""
+    out = set()
+    for root, _dirs, files in os.walk(AM_MUSIC_PATH):
+        for f in files:
+            out.add(ospath.join(root, f))
+    return out
+
+
+async def am_download(urls: list, batch_no: int = 0, batch_total: int = 1):
+    """Download ONE batch of songs in ALL formats into /music.
 
     Returns list of (format_name, log_path) for the S3 mirror step.
     """
@@ -339,14 +392,19 @@ async def am_download(playlist_url: str):
 
     os.chdir(AM_MUSIC_PATH)
 
+    suffix = "" if batch_total <= 1 else f"-batch{batch_no:02d}"
     results = []
     total = len(AM_FORMATS)
     for i, (name, extra_args) in enumerate(AM_FORMATS, start=1):
-        await _am_update_status(
-            f"<b>🎵 APPLE MUSIC » {name}</b>\n"
-            f"⏳ __Downloading playlist in {name} format ({i}/{total})...__"
-        )
-        log_path = _run_am_pass(name, extra_args, playlist_url)
+        if batch_total > 1:
+            head = f"<b>🎵 APPLE MUSIC » {name}</b>\n⏳ __Batch {batch_no}/{batch_total} — {len(urls)} songs in {name} format ({i}/{total})...__"
+        else:
+            head = (
+                f"<b>🎵 APPLE MUSIC » {name}</b>\n"
+                f"⏳ __Downloading in {name} format ({i}/{total})...__"
+            )
+        await _am_update_status(head)
+        log_path = _run_am_pass(name, extra_args, urls, suffix)
         results.append((name, log_path))
         await asleep(2)
 

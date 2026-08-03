@@ -272,51 +272,85 @@ async def taskScheduler():
         await Do_Leech(BOT.SOURCE, is_dir, BOT.Mode.ytdl, is_zip, is_unzip, is_dualzip)
 
 async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
-    """Download the predefined Apple Music playlist in ALL formats to /music,
-    mirror each format's log to S3, then upload everything to Telegram."""
+    """Download the predefined Apple Music playlist in batches of 5 songs.
+
+    For every batch: download all 5 formats into /music, upload the new
+    tracks to Telegram, mirror the format logs to S3, then move to the
+    next batch until the whole playlist is done.
+    """
     from colab_leecher import AM_PLAYLIST_URL
     from colab_leecher.downlader.apple_music import (
         AM_MUSIC_PATH,
+        AM_LOG_DIR,
         am_download,
+        fetch_playlist_songs,
+        _am_files_snapshot,
     )
     from colab_leecher.utility.handler import Leech
 
     Messages.download_name = "Apple Music Playlist"
 
-    # 1) Download all formats into /music
-    format_logs = await am_download(AM_PLAYLIST_URL)
+    # 1) Resolve the full track list
+    await Messages.status_msg.edit_text(
+        text=Messages.task_msg
+        + "<b>🎵 APPLE MUSIC » </b>\n⏳ __Reading playlist...__",
+        reply_markup=keyboard(),
+    )
+    songs = fetch_playlist_songs(AM_PLAYLIST_URL)
+    total_songs = len(songs)
+    batch_size = 5
+    batches = [
+        songs[i : i + batch_size] for i in range(0, total_songs, batch_size)
+    ]
+    total_batches = len(batches)
+    logging.info("AM task: %d songs -> %d batches of %d", total_songs, total_batches, batch_size)
 
-    # 2) Mirror each format's log to S3 for tracking (best effort)
-    try:
-        from colab_leecher.uploader.s3 import ensure_s3_client
-        from colab_leecher import S3_BUCKET_NAME, S3_REGION
+    done_files = set()
+    for batch_no, batch in enumerate(batches, start=1):
+        before = _am_files_snapshot()
 
-        if S3_BUCKET_NAME:
-            ensure_s3_client()
-            for name, log_path in format_logs:
-                key = f"music-logs/{name.lower()}.log"
-                ensure_s3_client().upload_file(log_path, S3_BUCKET_NAME, key)
-                logging.info("AM log %s mirrored to s3://%s/%s", name, S3_BUCKET_NAME, key)
-    except Exception as e:
-        logging.error(f"AM log mirror to S3 failed: {e}")
+        # 2) Download this batch in ALL formats
+        format_logs = await am_download(batch, batch_no, total_batches)
+
+        # 3) Mirror each format's log to S3 for tracking (best effort)
+        try:
+            from colab_leecher.uploader.s3 import ensure_s3_client
+            from colab_leecher import S3_BUCKET_NAME
+
+            if S3_BUCKET_NAME:
+                ensure_s3_client()
+                for name, log_path in format_logs:
+                    key = f"music-logs/{name.lower()}.log"
+                    ensure_s3_client().upload_file(log_path, S3_BUCKET_NAME, key)
+                    logging.info("AM log %s mirrored to s3://%s/%s", name, S3_BUCKET_NAME, key)
+        except Exception as e:
+            logging.error(f"AM log mirror to S3 failed: {e}")
+
+        # 4) Upload only the tracks created by this batch
+        new_files = sorted(_am_files_snapshot() - before)
+        done_files.update(new_files)
+        if not new_files:
+            logging.warning("Batch %d produced no new files — skipping upload", batch_no)
+            continue
+
+        await Messages.status_msg.edit_text(
+            text=Messages.task_msg
+            + f"<b>🎵 APPLE MUSIC » </b>\n📤 __Uploading batch {batch_no}/{total_batches} "
+            f"({len(new_files)} files)...__",
+            reply_markup=keyboard(),
+        )
+        Paths.down_path = AM_MUSIC_PATH
+        for f in new_files:
+            await Leech(ospath.dirname(f), False)
+
+        logging.info("Batch %d/%d done — %d files uploaded", batch_no, total_batches, len(new_files))
 
     Transfer.total_down_size = getSize(AM_MUSIC_PATH)
 
-    # 3) Upload every downloaded track to Telegram
-    if is_zip:
-        await Zip_Handler(AM_MUSIC_PATH, True, False)
-        await Leech(Paths.temp_zpath, True)
-    elif is_unzip:
-        await Unzip_Handler(AM_MUSIC_PATH, False)
-        await Leech(Paths.temp_unzip_path, True)
-    elif is_dualzip:
-        await Unzip_Handler(AM_MUSIC_PATH, False)
-        await Zip_Handler(Paths.temp_unzip_path, True, True)
-        await Leech(Paths.temp_zpath, True)
-    else:
-        Paths.down_path = AM_MUSIC_PATH
-        await Leech(AM_MUSIC_PATH, False)
-
+    await Messages.status_msg.edit_text(
+        text=Messages.task_msg + "<b>🎵 APPLE MUSIC » </b>\n✅ __All batches finished.__",
+        reply_markup=keyboard(),
+    )
     await SendLogs(True)
 
 async def Do_Leech(source, is_dir, is_ytdl, is_zip, is_unzip, is_dualzip):
