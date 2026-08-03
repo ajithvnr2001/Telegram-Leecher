@@ -274,6 +274,7 @@ async def taskScheduler():
 async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
     """Download the predefined Apple Music playlist in ALL formats to /music,
     mirror each format's log to S3, then upload everything to Telegram."""
+    from colab_leecher import AM_PLAYLIST_URL
     from colab_leecher.downlader.apple_music import (
         AM_MUSIC_PATH,
         am_download,
