@@ -189,7 +189,8 @@ async def am_music_cmd(client, message):
         text = (
             "<b>🎵 APPLE MUSIC » LOCAL SAVE 💾</b>\n\n"
             "The predefined playlist will be downloaded in <b>ALL formats</b> "
-            "(ALAC, Dolby Atmos, AAC-LC 256, AAC 128, HE-AAC 64) into "
+            "(ALAC, Dolby Atmos, AAC-LC 256, AAC 128, HE-AAC 64) plus "
+            "<b>Music Videos</b> at max quality into "
             "<code>/content</code> — <b>no Telegram upload</b>.\n\n"
             f"📀 <b>Playlist »</b> <code>{AM_PLAYLIST_URL}</code>"
         )
@@ -197,7 +198,8 @@ async def am_music_cmd(client, message):
         text = (
             "<b>🎵 APPLE MUSIC » </b>\n\n"
             "The predefined playlist will be downloaded in <b>ALL formats</b> "
-            "(ALAC, Dolby Atmos, AAC-LC 256, AAC 128, HE-AAC 64) into "
+            "(ALAC, Dolby Atmos, AAC-LC 256, AAC 128, HE-AAC 64) plus "
+            "<b>Music Videos</b> at max quality into "
             "<code>/music</code>, then uploaded to Telegram.\n\n"
             f"📀 <b>Playlist »</b> <code>{AM_PLAYLIST_URL}</code>"
         )
@@ -624,7 +626,7 @@ async def help_command(client, message):
     msg = await message.reply_text(
         "Send /start To Check If I am alive 🤨\n\n"
         "Send /tupload, /gdupload, /drupload, /ytupload to start transloading 🚀\n\n"
-        "Send /amusic to download the predefined Apple Music playlist in ALL formats (ALAC / Atmos / AAC) to /music and upload to Telegram 🎵\n"
+        "Send /amusic to download the predefined Apple Music playlist in ALL formats (ALAC / Atmos / AAC) + Music Videos at max quality, to /music and upload to Telegram 🎵\n"
         "Send /amusic <code>local</code> to save it on the Colab disk (/content) without uploading 📦\n\n"
         "Send /s3upload to mirror downloads to your S3 / Wasabi bucket ☁️\n"
         "Send /s3leech to leech objects from S3 / Wasabi to Telegram 📥\n"

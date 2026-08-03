@@ -91,7 +91,7 @@ Full reference (with sources, options, and examples for every command) lives in 
 
 ## **🎵 Apple Music Integration**
 
-DM your bot `/amusic` to download the predefined Apple Music playlist (`AM_PLAYLIST_URL`, set in the notebook) in **all five audio formats**, upload every track to Telegram, and mirror each format's download log to S3.
+DM your bot `/amusic` to download the predefined Apple Music playlist (`AM_PLAYLIST_URL`, set in the notebook) in **all five audio formats plus Music Videos**, upload every track to Telegram, and mirror each format's download log to S3.
 
 Use `/amusic local` to download to the **Colab disk** (`/content`) instead — **no Telegram upload**; files just stay local.
 
@@ -107,7 +107,7 @@ Every song yields **5 files** — one per format — **all with the same naming 
 01.KangalIrandal.AAC.64Kbps.m4a        (HE-AAC 64)
 ```
 
-The universal file-name pattern is `{SongNumber}.{SongName}.{FORMAT}.{VARIANT}.m4a` — the same pattern across every format, so files from different formats are distinguishable at a glance. Music Videos are skipped.
+The universal file-name pattern is `{SongNumber}.{SongName}.{FORMAT}.{VARIANT}.m4a` — the same pattern across every format, so files from different formats are distinguishable at a glance. **Music videos** (musicVideo items) in the playlist are downloaded after the songs, in their own batches, at **max quality** (mv-max 2160 / mv-audio-type atmos) — they land as `.mp4` under `AM-DL-MV downloads/`.
 
 ### Batch processing
 
@@ -117,7 +117,9 @@ The playlist is processed in **batches of 5 songs** (`batch_size = 5` in `task_m
 2. Upload only the newly produced files to Telegram via the standard Leech pipeline (already-downloaded files are skipped).
 3. Mirror the per-format logs to `s3://<bucket>/music-logs/<format>-batchNN.log`.
 
-All output lands under `/music` (ALAC → `AM-DL downloads/`, Atmos → `AM-DL-Atmos downloads/`, AAC →`AM-DL-AAC downloads/`).
+After all song batches, the **MV pass** runs the same way (batches of 5 videos, `am_download_mvs`), mirroring its log to `s3://<bucket>/music-logs/mv-batchNN.log` — the MV pass resumes independently off that log.
+
+All output lands under `/music` (ALAC → `AM-DL downloads/`, Atmos → `AM-DL-Atmos downloads/`, AAC →`AM-DL-AAC downloads/`, MV → `AM-DL-MV downloads/`).
 
 ### Requirements
 

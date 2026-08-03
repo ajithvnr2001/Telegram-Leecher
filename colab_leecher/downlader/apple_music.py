@@ -10,11 +10,12 @@ Adds a /amusic command that:
        - ALAC            (default run)
        - Dolby Atmos/EC3 (--atmos run)
        - AAC-LC 256      (--aac --aac-type aac-lc)
-       - AAC 128         (--aac --aac-type aac-128)
-       - HE-AAC 64       (--aac --aac-type he-aac-64)
-     Music Videos are skipped entirely (matching the process rules).
+- AAC 128         (--aac --aac-type aac-128)
+        - HE-AAC 64       (--aac --aac-type he-aac-64)
+     Music videos (musicVideo items) are downloaded too, in a second phase
+     (mv-max: 2160, mv-audio-type: atmos) into the MV save folder.
   2. Names every file with the SAME convention across all formats:
-        {SongNumber}.{SongName}.{FORMAT}.{VARIANT}.m4a
+      {SongNumber}.{SongName}.{FORMAT}.{VARIANT}.m4a
      e.g. 01.KangalIrandal.ALAC.Lossless.m4a, 01.KangalIrandal.AAC.256Kbps.m4a,
      so each song downstream yields one file per format (5 files/song).
   3. Saves everything under /music (AM_MUSIC_PATH).
@@ -97,6 +98,12 @@ AM_FORMATS = [
     ),
 ]
 
+# Music-video pass: am-downloader handles /music-video/ URLs directly and
+# saves them under the configured MV folder (AM-DL-MV downloads). The
+# highest quality is picked via the config: mv-max 2160 + mv-audio-type
+# atmos (main.go extractMvAudio picks Atmos > AC3 > AAC 256 > ...).
+AM_MV_FORMAT = "MV"
+
 AM_LOG_DIR = ospath.join(AM_MUSIC_PATH, "am-logs")
 # Every format log is also mirrored to S3 under this key prefix
 # (music-logs/<format>-batchNN.log). It doubles as the resume tracker:
@@ -133,11 +140,12 @@ def _am_tools_ready() -> bool:
     )
 
 
-def fetch_playlist_songs(playlist_url: str, limit: int = 0) -> list:
-    """Return per-song download URLs for an Apple Music playlist.
+def _parse_playlist_page(playlist_url: str):
+    """Fetch the public playlist page and return (songs, music_videos) URLs.
 
-    Parses the public playlist page (serialized-server-data) — no auth needed.
-    am-downloader accepts these /song/ URLs directly.
+    Parses serialized-server-data — no auth needed. Songs come back as
+    ``/song/{adamID}`` URLs, music videos as ``/music-video/{adamID}`` URLs
+    (am-downloader accepts both forms directly).
     """
     import urllib.request
 
@@ -150,26 +158,51 @@ def fetch_playlist_songs(playlist_url: str, limit: int = 0) -> list:
     if not m:
         raise RuntimeError("Could not find playlist data on page")
     data = json.loads(m.group(1))
-    songs = []
     try:
         sections = data["data"][0]["data"]["sections"]
     except (KeyError, IndexError, TypeError):
         raise RuntimeError("Unexpected playlist page structure")
+    songs = []
+    mvs = []
     for sec in sections:
         if "track" not in str(sec.get("id", "")):
             continue
         for item in sec.get("items", []):
             cd = item.get("contentDescriptor") or {}
-            if cd.get("kind") == "song" and (cd.get("identifiers") or {}).get("storeAdamID"):
-                songs.append(
-                    f"https://music.apple.com/in/song/{(cd['identifiers'])['storeAdamID']}"
-                )
-            elif cd.get("url") and "song" in cd.get("url", ""):
-                songs.append(cd["url"])
+            ident = (cd.get("identifiers") or {}).get("storeAdamID")
+            if not ident:
+                continue
+            if cd.get("kind") == "song":
+                songs.append(f"https://music.apple.com/in/song/{ident}")
+            elif cd.get("kind") == "musicVideo":
+                mvs.append(f"https://music.apple.com/in/music-video/{ident}")
+    return songs, mvs
+
+
+def fetch_playlist_songs(playlist_url: str, limit: int = 0) -> list:
+    """Return per-song download URLs for an Apple Music playlist.
+
+    Parses the public playlist page (serialized-server-data) — no auth needed.
+    am-downloader accepts these /song/ URLs directly. Music videos in the
+    same playlist are skipped here (they get their own pass).
+    """
+    songs, _ = _parse_playlist_page(playlist_url)
     if not songs:
         raise RuntimeError("No songs found in playlist page")
     logging.info("AM playlist has %d songs", len(songs))
     return songs[:limit] if limit else songs
+
+
+def fetch_playlist_mvs(playlist_url: str, limit: int = 0) -> list:
+    """Return per-music-video download URLs for an Apple Music playlist.
+
+    Same page parsing as :func:`fetch_playlist_songs`, but keeps only the
+    ``musicVideo`` items. am-downloader's ``/music-video/{id}`` handler needs
+    the media-user-token and the mp4decrypt binary.
+    """
+    _, mvs = _parse_playlist_page(playlist_url)
+    logging.info("AM playlist has %d music videos", len(mvs))
+    return mvs[:limit] if limit else mvs
 
 
 async def _am_update_status(head: str):
@@ -205,7 +238,7 @@ def _download_file(url: str, dest: str):
     raise RuntimeError(f"Failed to download {url}")
 
 
-def _download_tool(client, key: str, dest: str):
+def _download_tool(client, key: str, dest: str, fallback_url: str = ""):
     """Download a tool from S3 (credentials.json bucket) or public URL fallback."""
     if client is not None:
         try:
@@ -214,10 +247,11 @@ def _download_tool(client, key: str, dest: str):
                 return
         except Exception as e:
             logging.error(f"S3 tool download failed for {key}: {e}")
-    url = (
-        AM_TOOL_WRAPPER_URL if key.endswith("wrapper-release.tar.gz") else AM_TOOL_DOWNLOADER_URL
-    )
-    _download_file(url, dest)
+    if not fallback_url:
+        fallback_url = (
+            AM_TOOL_WRAPPER_URL if key.endswith("wrapper-release.tar.gz") else AM_TOOL_DOWNLOADER_URL
+        )
+    _download_file(fallback_url, dest)
 
 
 def _s3_client_or_none():
@@ -241,6 +275,7 @@ async def ensure_am_tools():
     """Fetch the wrapper + am-downloader toolchain from S3 if missing."""
     makedirs(AM_TOOLS_PATH, exist_ok=True)
     if _am_tools_ready():
+        await _ensure_am_mp4decrypt()
         return
 
     await _am_update_status("<b>🎵 APPLE MUSIC » </b>\n⏳ __Fetching am-downloader toolchain from S3...__")
@@ -265,8 +300,35 @@ async def ensure_am_tools():
         if ospath.exists(main_bin):
             os.chmod(main_bin, 0o755)
 
+    await _ensure_am_mp4decrypt(client)
     logging.info("AM tools ready.")
 
+
+async def _ensure_am_mp4decrypt(client=None):
+    """Make sure the ``mp4decrypt`` (Bento4) binary is on PATH.
+
+    Required by am-downloader for the music-video pass. Where it's already
+    installed (e.g. apt bento4) nothing happens; otherwise it is pulled
+    from S3 (am-tools/mp4decrypt).
+    """
+    import shutil
+
+    if shutil.which("mp4decrypt"):
+        return
+    dest = "/usr/local/bin/mp4decrypt"
+    if ospath.exists(dest):
+        return
+    if client is None:
+        client = _s3_client_or_none()
+    if client is None:
+        logging.warning("AM mp4decrypt unavailable and no S3 client — MV tracks will be skipped.")
+        return
+    try:
+        client.download_file(S3_BUCKET_NAME, f"{AM_TOOLS_S3_PREFIX}/mp4decrypt", dest)
+        os.chmod(dest, 0o755)
+        logging.info("AM mp4decrypt installed at %s", dest)
+    except Exception as e:
+        logging.error(f"AM mp4decrypt download failed ({e}) — MV tracks will be skipped.")
 
 def _am_wrapper_running() -> bool:
     try:
@@ -487,6 +549,41 @@ def am_completed_batches() -> set:
     return {batch for batch, fmts in batch_to_formats.items() if required.issubset(fmts)}
 
 
+def am_completed_mv_batches() -> set:
+    """Batch numbers (int) of the MV pass already finished in a PREVIOUS run.
+
+    The MV pass is a single run per batch (unlike the 5 audio formats), so a
+    batch counts as completed when its own log ``music-logs/mv-batchNN.log``
+    exists in S3.
+    """
+    from colab_leecher.uploader.s3 import ensure_s3_client
+
+    done = set()
+    try:
+        client = ensure_s3_client()
+    except Exception as e:
+        logging.error(f"AM resume: S3 client init failed ({e}) — will start MV from batch 1")
+        return done
+
+    try:
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(
+            Bucket=S3_BUCKET_NAME, Prefix=f"{S3_LOG_PREFIX}/"
+        ):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                m = re.match(
+                    rf"^{re.escape(S3_LOG_PREFIX)}/mv-batch(\d+)\.log$",
+                    key,
+                )
+                if m:
+                    done.add(int(m.group(1)))
+    except Exception as e:
+        logging.error(f"AM resume: S3 MV log scan failed ({e})")
+        return set()
+    return done
+
+
 async def am_download(urls: list, batch_no: int = 0, batch_total: int = 1):
     """Download ONE batch of songs in ALL formats into /music.
 
@@ -518,3 +615,38 @@ async def am_download(urls: list, batch_no: int = 0, batch_total: int = 1):
         await asleep(2)
 
     return results
+
+
+async def am_download_mvs(urls: list, batch_no: int = 0, batch_total: int = 1) -> str:
+    """Download ONE batch of music videos into /music.
+
+    am-downloader picks the highest quality automatically from the config
+    (mv-max: 2160, mv-audio-type: atmos). Returns the log path for the S3
+    mirror step. The media-user-token and mp4decrypt are both required —
+    skip tracks the tool reports as unavailable, keep the ones it lands.
+    """
+    await _am_update_status(
+        "<b>🎵 APPLE MUSIC » </b>\n⏳ __Preparing tools...__"
+    )
+    await ensure_am_tools()
+    start_am_wrapper()
+    _write_am_config()
+
+    os.chdir(AM_MUSIC_PATH)
+
+    suffix = "" if batch_total <= 1 else f"-batch{batch_no:02d}"
+    if batch_total > 1:
+        head = (
+            f"<b>🎵 APPLE MUSIC » {AM_MV_FORMAT}</b>\n"
+            f"⏳ __Batch {batch_no}/{batch_total} — {len(urls)} music videos at "
+            f"max quality...__"
+        )
+    else:
+        head = (
+            f"<b>🎵 APPLE MUSIC » {AM_MV_FORMAT}</b>\n"
+            f"⏳ __Downloading {len(urls)} music videos at max quality...__"
+        )
+    await _am_update_status(head)
+    log_path = _run_am_pass(AM_MV_FORMAT, [], urls, suffix)
+    await asleep(2)
+    return log_path
