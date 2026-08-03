@@ -41,6 +41,7 @@ from os import makedirs, path as ospath
 
 from colab_leecher.utility.variables import Paths, Messages, MSG, BOT
 from colab_leecher.utility.helper import keyboard, sysINFO
+from colab_leecher import S3_BUCKET_NAME
 
 
 AM_MUSIC_PATH = "/music"  # new path where all Apple Music formats land
@@ -52,6 +53,9 @@ AM_TOOL_WRAPPER_URL = (
 AM_TOOL_DOWNLOADER_URL = (
     "https://s3.ap-northeast-1.wasabisys.com/musicapple/am-tools/am-downloader"
 )
+# Tools are stored in the S3 bucket configured in credentials.json under
+# the "am-tools" prefix. Public URLs above are only a fallback.
+AM_TOOLS_S3_PREFIX = "am-tools"
 
 # Each pass = (name, extra args). Playlist URL is appended at run time.
 AM_FORMATS = [
@@ -125,6 +129,38 @@ def _download_file(url: str, dest: str):
     raise RuntimeError(f"Failed to download {url}")
 
 
+def _download_tool(client, key: str, dest: str):
+    """Download a tool from S3 (credentials.json bucket) or public URL fallback."""
+    if client is not None:
+        try:
+            client.download_file(S3_BUCKET_NAME, key, dest)
+            if ospath.exists(dest):
+                return
+        except Exception as e:
+            logging.error(f"S3 tool download failed for {key}: {e}")
+    url = (
+        AM_TOOL_WRAPPER_URL if key.endswith("wrapper-release.tar.gz") else AM_TOOL_DOWNLOADER_URL
+    )
+    _download_file(url, dest)
+
+
+def _s3_client_or_none():
+    from colab_leecher import (
+        S3_ACCESS_KEY,
+        S3_SECRET_KEY,
+        S3_ENDPOINT_URL,
+        S3_REGION,
+    )
+    from colab_leecher.uploader.s3 import ensure_s3_client
+
+    try:
+        if all([S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET_NAME]):
+            return ensure_s3_client()
+    except Exception as e:
+        logging.error(f"S3 client init failed: {e}")
+    return None
+
+
 async def ensure_am_tools():
     """Fetch the wrapper + am-downloader toolchain from S3 if missing."""
     makedirs(AM_TOOLS_PATH, exist_ok=True)
@@ -133,16 +169,18 @@ async def ensure_am_tools():
 
     await _am_update_status("<b>🎵 APPLE MUSIC » </b>\n⏳ __Fetching am-downloader toolchain from S3...__")
 
+    client = _s3_client_or_none()
+
     dl = ospath.join(AM_TOOLS_PATH, "am-downloader")
     if not ospath.exists(dl):
-        _download_file(AM_TOOL_DOWNLOADER_URL, dl)
+        _download_tool(client, f"{AM_TOOLS_S3_PREFIX}/am-downloader", dl)
         os.chmod(dl, 0o755)
 
     wr_dir = ospath.join(AM_TOOLS_PATH, "wrapper-release")
     if not ospath.exists(ospath.join(wr_dir, "wrapper")):
         tarball = ospath.join(AM_TOOLS_PATH, "wrapper-release.tar.gz")
         if not ospath.exists(tarball):
-            _download_file(AM_TOOL_WRAPPER_URL, tarball)
+            _download_tool(client, f"{AM_TOOLS_S3_PREFIX}/wrapper-release.tar.gz", tarball)
         subprocess.run(
             ["tar", "xzf", tarball, "-C", AM_TOOLS_PATH], check=True, timeout=600
         )
