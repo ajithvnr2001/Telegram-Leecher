@@ -122,6 +122,20 @@ just stay on the Colab disk.
    The notebook cell can also pull the list from a `SONGLIST_URL`
    (http(s) or `s3://bucket/key`) before starting the bot.
 
+**Generating a songlist:** `tools/extract_songlist.py` builds `songlist.txt`
+from artist/album/playlist Apple Music links (no auth — public iTunes Lookup
+API + public page parsing):
+
+```bash
+# from a links.txt containing any music.apple.com URLs (artist/album/playlist)
+python3 tools/extract_songlist.py /path/to/links.txt -o songlist.txt
+# or directly
+python3 tools/extract_songlist.py "https://music.apple.com/in/artist/a-r-rahman/3249567/full-albums" -o songlist.txt
+```
+
+Then upload `songlist.txt` to `/content` on the Colab runtime (or serve it
+via `S3`/http and point `SONGLIST_URL` at it).
+
 ```
 /amusic
   ├─ [playlist pass]
