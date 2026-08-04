@@ -176,6 +176,13 @@ Three ways to get it there:
    SONGLIST_URL = "s3://musicapple/songlist.txt"
    ```
    The cell downloads it to `/content/songlist.txt` *before* starting the bot.
+
+   **Accepted `SONGLIST_URL` path formats** (verified):
+   - `s3://<bucket>/<key>` — uses the cell's `S3_*` credentials → works for **private** buckets (the reliable one)
+   - `https://<host>/<file.txt>` — plain direct-download URL (raw GitHub, gist raw, direct file hosts, Drive `uc?id=<ID>&export=download`)
+   - ❌ plain Wasabi/S3 *console* URLs (`https://s3.<region>.wasabisys.com/<bucket>/<key>`) come back **403** when the object is private — use the `s3://` form instead
+   - ❌ Google Drive / Dropbox *share-page* links (they return an HTML page, not the file) — convert to the direct-download form first
+
 3. **Any http(s) URL** — also works for `SONGLIST_URL` (paste bin, raw gist, Drive direct link, ...).
 
 Then either press **START** on `/amusic songs` — or tick `AM_SONGLIST_AUTO = True`
