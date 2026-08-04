@@ -1265,6 +1265,16 @@ async def am_download_songlist(song_urls: list, on_new_files=None):
             if ci == 1:
                 results.append((name, log_path))
             chunk_done = _am_parse_pass_log_done(log_path, chunk, mode="queue", offset=offset)
+            # am-downloader SKIPS tracks whose file is already on disk with
+            # "Track already exists locally." — within the SAME Colab runtime
+            # those files survived, but since the chunk was never uploaded
+            # they must be uploaded now and only then marked done.
+            extra_files = set()
+            for adam, base in _am_parse_pass_log_skip_exists(log_path, chunk, offset=offset):
+                found = _am_find_skip_files([base])
+                if found:
+                    chunk_done.add(adam)
+                    extra_files |= found
             newly = {(fmt, a) for a in chunk_done if (fmt, a) not in done}
             # Mirror the appended per-format log too (best effort), so even a
             # crash leaves the full traceback of what was attempted.
@@ -1274,13 +1284,59 @@ async def am_download_songlist(song_urls: list, on_new_files=None):
             # Telegram, so a crash between download and upload re-runs the
             # chunk on the next boot instead of losing the files forever.
             if on_new_files is not None:
-                new_files = sorted(_am_files_snapshot() - before)
+                new_files = sorted((_am_files_snapshot() - before) | extra_files)
                 if new_files:
                     await on_new_files(fmt, new_files)
             done |= newly
             _am_songlist_dedupe_append(newly)
             await asleep(1)
     return results
+
+
+def _am_parse_pass_log_skip_exists(log_path: str, urls: list, offset: int = 0):
+    """(adam_id, base_name) pairs of tracks am-downloader reported as already
+    on disk ("Track already exists locally.") in the tail region of the log.
+
+    Used by songlist mode: same-runtime restarts skip the download step, but
+    those files were never uploaded, so they must be uploaded now and only
+    then marked done.
+    """
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            f.seek(offset)
+            text = f.read()
+    except OSError:
+        return []
+    delim = r"^\s*Queue \d+ of \d+:"
+    marks = [m.start() for m in re.finditer(delim, text, re.M)]
+    pairs = []
+    for i, start in enumerate(marks):
+        end = marks[i + 1] if i + 1 < len(marks) else len(text)
+        seg = text[start:end]
+        if "Track already exists locally." in seg:
+            lines = [l.strip() for l in seg.splitlines() if l.strip()]
+            base = ""
+            for j, l in enumerate(lines):
+                if l == "Track already exists locally." and j > 0:
+                    base = lines[j - 1]
+            adam = _am_url_adam_id(urls[i]) if i < len(urls) else ""
+            if adam and base:
+                pairs.append((adam, base))
+    return pairs
+
+
+def _am_find_skip_files(skip_bases: list) -> set:
+    """Glob for existing files matching am-downloader's skip-segment names."""
+    import glob as _glob
+
+    found = set()
+    for base in skip_bases:
+        base = base.strip()
+        if not base:
+            continue
+        pat = ospath.join(AM_MUSIC_PATH, "**", base + ".m4a")
+        found.update(_glob.glob(pat, recursive=True))
+    return found
 
 
 def _am_songlist_mirror_log(fmt: str, log_path: str):
