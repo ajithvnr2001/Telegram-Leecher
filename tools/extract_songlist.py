@@ -153,16 +153,16 @@ def main() -> int:
             groups.append((title, urls))
 
     sources = read_sources(args)
+    artist_ids = []
     if args.artist:
-        artist_id = args.artist
-    else:
-        artist_id = None
+        artist_ids.append(args.artist)
 
     for url in sources:
         kind, cc, ident = parse_am_url(url)
         cc = cc or args.country
         if kind == "artist":
-            artist_id = ident
+            if ident not in artist_ids:
+                artist_ids.append(ident)
         elif kind == "album":
             hits = get_json(f"{LOOKUP}?id={ident}&country={cc}").get("results", [])
             alb = next((r for r in hits if r.get("collectionType") == "Album"), None)
@@ -185,7 +185,8 @@ def main() -> int:
         else:
             print(f"  ⚠ unrecognized source: {url}", file=sys.stderr)
 
-    if artist_id:
+    # Every artist URL contributes its full discography.
+    for artist_id in artist_ids:
         albums = artist_albums(artist_id, args.country)
         if args.limit_albums:
             albums = albums[: args.limit_albums]
