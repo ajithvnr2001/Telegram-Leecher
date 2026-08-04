@@ -1,7 +1,7 @@
 # copyright 2023 © Xron Trix | https://github.com/Xrontrix10
 
 
-import os
+import os, re
 import shutil
 import logging
 import pathlib
@@ -36,6 +36,45 @@ from colab_leecher.utility.helper import (
     sizeUnit,
     sysINFO,
 )
+
+
+async def _am_flood_interval(exc: BaseException) -> int:
+    """Extract the wait seconds from a [420 FLOOD_WAIT_X] error, if any."""
+    x = getattr(exc, "x", None) or getattr(exc, "value", None)
+    if isinstance(x, int) and x > 0:
+        return x
+    m = re.search(r"wait of (\d+) seconds", str(exc), re.I)
+    return int(m.group(1)) if m else 0
+
+
+async def upload_one_file_throttled(new_path: str, file_name: str):
+    """Upload ONE file, pacing and [420 FLOOD_WAIT_X] retry-aware.
+
+    Long AM backfills (hundreds of files) trip Telegram's account-wide upload
+    rate limits when there's no gap between uploads. Every upload waits
+    AM_UPLOAD_GAP seconds afterwards, and a flood error sleeps the requested
+    delay then RETRIES the same file instead of erroring the whole run.
+    """
+    from colab_leecher import AM_UPLOAD_GAP
+
+    attempts = 0
+    while True:
+        try:
+            await upload_file(new_path, file_name)
+            break
+        except Exception as e:
+            attempts += 1
+            wait = await _am_flood_interval(e)
+            if not wait:
+                wait = min(30 * attempts, 300)
+            logging.warning(
+                f"Upload of {file_name} rate-limited (attempt {attempts}); retrying in {wait}s: {e}"
+            )
+            if attempts >= 20:
+                raise
+            await sleep(wait + 1)
+    if AM_UPLOAD_GAP > 0:
+        await sleep(AM_UPLOAD_GAP)
 
 
 async def Leech(folder_path: str, remove: bool):
@@ -81,7 +120,7 @@ async def Leech(folder_path: str, remove: bool):
                     )
                 except Exception as d:
                     logging.info(d)
-                await upload_file(new_path, file_name)
+                await upload_one_file_throttled(new_path, file_name)
                 Transfer.up_bytes.append(os.stat(new_path).st_size)
 
                 count += 1
@@ -113,7 +152,7 @@ async def Leech(folder_path: str, remove: bool):
             except Exception as d:
                 logging.error(f"Error updating status bar: {d}")
             file_size = os.stat(new_path).st_size
-            await upload_file(new_path, file_name)
+            await upload_one_file_throttled(new_path, file_name)
             Transfer.up_bytes.append(file_size)
 
             if remove:

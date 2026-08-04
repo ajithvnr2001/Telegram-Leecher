@@ -40,6 +40,10 @@ AM_AUTH_TOKEN = credentials.get("AM_AUTH_TOKEN", "") or ""
 # music-video pass.
 AM_ALBUM_LIMIT = int(credentials.get("AM_ALBUM_LIMIT", 0) or 0)
 AM_MV_LIMIT = int(credentials.get("AM_MV_LIMIT", 0) or 0)
+# Pacing between successive Telegram uploads (seconds). Telegram rate-limits
+# upload bursts account-wide ([420 FLOOD_WAIT_X]); 3s/file keeps long AM runs
+# inside limits. 0 = no pacing. Pass "AM_UPLOAD_GAP" in credentials.json.
+AM_UPLOAD_GAP = int(credentials.get("AM_UPLOAD_GAP", 3) or 0)
 # Songlist mode: when AM_SONGLIST_AUTO is truthy the bot starts downloading
 # /content/songlist.txt by itself right after startup — no /amusic "START"
 # press needed ("ticked" in the Colab cell = True).
