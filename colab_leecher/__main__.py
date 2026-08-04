@@ -146,16 +146,17 @@ async def am_music_cmd(client, message):
     `/amusic local`  → download to /content (Colab disk) only, no upload
     """
     global BOT, src_request_msg
-    from colab_leecher import AM_PLAYLIST_URL, AM_MEDIA_TOKEN
+    from colab_leecher import AM_PLAYLIST_URL, AM_ARTIST_URL, AM_MEDIA_TOKEN
     from colab_leecher.downlader.apple_music import is_am_playlist, is_am_artist
 
     BOT.Mode.am_local = "local" in [a.lower() for a in message.command[1:]]
 
-    if not AM_PLAYLIST_URL:
+    if not AM_PLAYLIST_URL and not AM_ARTIST_URL:
         msg = await message.reply_text(
-            "⚠️ <b>Apple Music playlist not set.</b>\n\nSet <code>AM_PLAYLIST_URL</code> "
-            "(and <code>AM_MEDIA_TOKEN</code>) in the Colab notebook cell, then restart "
-            "the bot.",
+            "⚠️ <b>Apple Music source not set.</b>\n\nSet <code>AM_PLAYLIST_URL</code> "
+            "(playlist) or <code>AM_ARTIST_URL</code> (artist albums) — or both — "
+            "plus <code>AM_MEDIA_TOKEN</code> in the Colab notebook cell, then "
+            "restart the bot.",
             quote=True,
         )
         await sleep(15)
@@ -172,38 +173,48 @@ async def am_music_cmd(client, message):
         await message_deleter(message, msg)
         return
 
-    if not (is_am_playlist(AM_PLAYLIST_URL) or is_am_artist(AM_PLAYLIST_URL)):
-        msg = await message.reply_text(
-            "⚠️ <b>AM_PLAYLIST_URL is not a valid Apple Music link.</b>\n\n"
-            "Use a <b>playlist</b> (…/playlist/…) or an <b>artist</b> "
-            "(…/artist/…, all albums are downloaded oldest-first) link.\n\n"
-            f"Current value: <code>{AM_PLAYLIST_URL}</code>",
-            quote=True,
-        )
-        await sleep(15)
-        await message_deleter(message, msg)
-        return
+    for lbl, url in (("AM_PLAYLIST_URL", AM_PLAYLIST_URL), ("AM_ARTIST_URL", AM_ARTIST_URL)):
+        if url and not (is_am_playlist(url) or is_am_artist(url)):
+            msg = await message.reply_text(
+                "⚠️ <b>"
+                + lbl
+                + " is not a valid Apple Music link.</b>\n\n"
+                "Use a <b>playlist</b> (…/playlist/…) or an <b>artist</b> "
+                "(…/artist/…, all albums are downloaded oldest-first) link.\n\n"
+                f"Current value: <code>{url}</code>",
+                quote=True,
+            )
+            await sleep(15)
+            await message_deleter(message, msg)
+            return
 
     BOT.Mode.mode = "am-music"
     BOT.Mode.ytdl = False
 
+    am_lines = []
+    if AM_PLAYLIST_URL:
+        am_lines.append(f"📀 <b>Playlist »</b> <code>{AM_PLAYLIST_URL}</code>")
+    if AM_ARTIST_URL:
+        am_lines.append(f"🎤 <b>Artist »</b> <code>{AM_ARTIST_URL}</code>")
+    am_src = "\n".join(am_lines)
+
     if BOT.Mode.am_local:
         text = (
             "<b>🎵 APPLE MUSIC » LOCAL SAVE 💾</b>\n\n"
-            "The predefined playlist will be downloaded in <b>ALL formats</b> "
+            "The predefined source(s) will be downloaded in <b>ALL formats</b> "
             "(ALAC, Dolby Atmos, AAC-LC 256, AAC 128, HE-AAC 64) plus "
             "<b>Music Videos</b> at max quality into "
             "<code>/content</code> — <b>no Telegram upload</b>.\n\n"
-            f"📀 <b>Playlist »</b> <code>{AM_PLAYLIST_URL}</code>"
+            f"{am_src}"
         )
     else:
         text = (
             "<b>🎵 APPLE MUSIC » </b>\n\n"
-            "The predefined playlist will be downloaded in <b>ALL formats</b> "
+            "The predefined source(s) will be downloaded in <b>ALL formats</b> "
             "(ALAC, Dolby Atmos, AAC-LC 256, AAC 128, HE-AAC 64) plus "
             "<b>Music Videos</b> at max quality into "
             "<code>/music</code>, then uploaded to Telegram.\n\n"
-            f"📀 <b>Playlist »</b> <code>{AM_PLAYLIST_URL}</code>"
+            f"{am_src}"
         )
 
     await message.reply_text(

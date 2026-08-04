@@ -1,14 +1,25 @@
 # Apple Music Downloader (`/amusic`)
 
-`/amusic` downloads a predefined Apple Music playlist in **all five audio
-formats plus Music Videos**, uploads every track to Telegram, and mirrors each
-format's download log to S3.
+`/amusic` downloads a predefined Apple Music **playlist** and/or an **artist's
+full album catalog** in **all five audio formats plus Music Videos**, uploads
+every track to Telegram, and mirrors each format's download log to S3.
 
 - `/amusic` — download into `/music` and **upload everything to Telegram**.
 - `/amusic local` — download into `/content` (the Colab disk) and **keep it
   local** — nothing is uploaded to Telegram. Files land under
   `/content/AM-DL downloads/`, `/content/AM-DL-Atmos downloads/`,
   `/content/AM-DL-AAC downloads/` and `/content/AM-DL-MV downloads/`.
+
+Both sources are supported, and they can be set at the same time:
+
+| Config field | Source | Processing |
+|---|---|---|
+| `AM_PLAYLIST_URL` | Playlist link | 5-song batches, then the playlist's MVs |
+| `AM_ARTIST_URL` | Artist link (`…/artist/…`) | ALL albums oldest-first (one album per batch), then the artist-wide MVs |
+
+Each source runs as its **own independent pass** and writes to a **separate S3
+log keyspace**, so resuming a playlist never reads the artist's logs and vice
+versa (see §1).
 
 This document covers the end-to-end flow, the unified naming convention, batch
 processing, configuration, and troubleshooting.
@@ -17,10 +28,14 @@ processing, configuration, and troubleshooting.
 
 ## 1. Overview
 
-Sending `/amusic` to the bot triggers `Do_AM_Music` in
-`colab_leecher/utility/task_manager.py`, which:
+Sending `/amusic` to the bot triggers `Do_AM_Music` (playlist mode) and/or
+`Do_AM_Artist` (artist mode) in `colab_leecher/utility/task_manager.py`. The
+dispatcher runs the playlist pass first, then the artist pass, when both are
+configured.
 
-1. Reads the playlist URL from `AM_PLAYLIST_URL` (set in the notebook) and
+**Playlist mode** (`Do_AM_Music`):
+
+1. Reads the playlist URL (passed explicitly as `am_url`) and
    resolves the full track list from the public playlist page — **no auth
    needed** to list songs.
 2. Slices the track list into **batches of 5 songs**.
@@ -32,11 +47,31 @@ Sending `/amusic` to the bot triggers `Do_AM_Music` in
    afterwards in their own batches at **max quality** (mv-max 2160,
    mv-audio-type atmos) — they land under `AM-DL-MV downloads/` as `.mp4`.
 
-**Crash-resume:** before the first batch, the bot scans S3 for existing
-`music-logs/<format>-batchNN.log` objects. Any batch that already has **all five
-format logs** in S3 is considered finished by a previous run and is **skipped**
-on the next `/amusic`, so a Colab restart never re-downloads completed batches.
-The MV pass resumes independently off `music-logs/mv-batchNN.log`.
+**Artist mode** (`Do_AM_Artist`):
+
+1. Resolves the artist's **full album list** via the amp-api
+   (`/v1/catalog/<cc>/artists/<id>/albums`, oldest release first).
+2. Downloads **one album per pass** (the album URL expands to its own tracks)
+   through all five formats.
+3. Mirrors each album's logs under `s3://<bucket>/music-logs/album-<id>/`.
+4. After the albums, downloads the artist's **music videos** in batches of 5
+   at max quality, mirroring logs to `music-logs/artist-mv-batchNN.log`.
+5. `AM_ALBUM_LIMIT` / `AM_MV_LIMIT` (0 = everything) cap how many albums/MVs
+   are processed.
+
+**Crash-resume & key isolation:** before running, each pass scans S3 for its
+OWN log keys and skips anything already finished by a previous run:
+
+| Pass | Resume S3 keys (read) | Written keys |
+|---|---|---|
+| Playlist songs | `music-logs/<format>-batchNN.log` (only the 5 format names) | same |
+| Playlist MVs | `music-logs/mv-batchNN.log` | `music-logs/mv-batchNN.log` |
+| Artist albums | `music-logs/album-<id>/…` (all 5 formats present = done) | `music-logs/album-<id>/<format>.log` |
+| Artist MVs | `music-logs/artist-mv-batchNN.log` | `music-logs/artist-mv-batchNN.log` |
+
+The scan regexes are strict (format-name whitelist, per-source prefixes), so a
+playlist resume in a mixed bucket never picks up `album-*`, `mv-batch*` or
+`artist-mv-batch*` keys, and an artist resume never picks up playlist song keys.
 
 **Local mode:** `/amusic local` switches the working directory to `/content`
 via `set_am_music_path()` (in `apple_music.py`) and skips the `Leech` upload
@@ -45,20 +80,25 @@ just stay on the Colab disk.
 
 ```
 /amusic
-  └─ fetch_playlist_songs(AM_PLAYLIST_URL)     → 99 songs
-       └─ batches of 5
-            └─ per batch:
-                 ├─ am_download(batch)         → 5 formats × 5 songs
-                 ├─ snapshot diff              → only new files
-                 ├─ Leech(each new file)       → upload to Telegram
-                 └─ mirror logs → S3 music-logs/
-  └─ fetch_playlist_mvs(AM_PLAYLIST_URL)       → N music videos
-       └─ batches of 5
-            └─ per batch:
-                 ├─ am_download_mvs(batch)     → MV at max quality
-                 ├─ snapshot diff              → only new files
-                 ├─ Leech(each new file)       → upload to Telegram
-                 └─ mirror log → S3 music-logs/mv-batchNN.log
+  ├─ [playlist pass]
+  │    └─ fetch_playlist_songs(AM_PLAYLIST_URL)  → 99 songs
+  │         └─ batches of 5
+  │              └─ per batch:
+  │                   ├─ am_download(batch)      → 5 formats × 5 songs
+  │                   ├─ snapshot diff           → only new files
+  │                   ├─ Leech(each new file)    → upload to Telegram
+  │                   └─ mirror logs → music-logs/<fmt>-batchNN.log
+  │    └─ fetch_playlist_mvs(AM_PLAYLIST_URL)    → N music videos
+  │         └─ per batch: am_download_mvs → mirror music-logs/mv-batchNN.log
+  └─ [artist pass]
+       └─ fetch_artist_albums(AM_ARTIST_URL)     → ALL albums (oldest first)
+            └─ per album:
+                 ├─ am_download_album(url, id)   → 5 formats × album tracks
+                 ├─ snapshot diff                → only new files
+                 ├─ Leech(each new file)         → upload to Telegram
+                 └─ mirror logs → music-logs/album-<id>/<fmt>.log
+       └─ fetch_artist_mvs(AM_ARTIST_URL)        → artist-wide MVs
+            └─ per batch: am_download_mvs → mirror music-logs/artist-mv-batchNN.log
 ```
 
 ---
@@ -147,8 +187,18 @@ he-aac-64-batch01.log
 | Notebook field | Used for |
 |---|---|
 | `AM_PLAYLIST_URL` | The playlist to download (song list is parsed from the public page) |
+| `AM_ARTIST_URL` | An artist link — ALL the artist's albums are downloaded oldest-first, one album per pass, plus the artist-wide MVs |
+| `AM_ALBUM_LIMIT` | Artist mode: cap on how many albums are downloaded (0 = all) |
+| `AM_MV_LIMIT` | Artist mode: cap on how many artist music videos are downloaded (0 = all) |
 | `AM_MEDIA_TOKEN` | Your Apple Music `media-user-token` — required for lossless / Atmos / AAC from an active subscription |
+| `AM_AUTH_TOKEN` | Optional pinned Authorization JWT; am-downloader falls back to it when its own token scrape returns empty (fixes all-MV "media-user-token may wrong or expired") |
 | `S3_*` fields | Only needed to auto-fetch the am-downloader toolchain and to mirror logs; toolchain is served from `s3://<bucket>/am-tools/` |
+
+Both URLs may be set at once — each source is processed in its own pass and
+keeps its own S3 log keyspace (`music-logs/<format>-batchNN.log` /
+`music-logs/mv-batchNN.log` for the playlist, `music-logs/album-<id>/…` /
+`music-logs/artist-mv-batchNN.log` for the artist), so crash-resume for one
+never touches the other's logs.
 
 The decryption wrapper + am-downloader binaries are fetched once on the first
 `/amusic` run into `/content/am-tools/` and reused afterwards (no re-download
