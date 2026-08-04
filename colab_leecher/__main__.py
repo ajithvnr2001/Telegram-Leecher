@@ -147,7 +147,7 @@ async def am_music_cmd(client, message):
     """
     global BOT, src_request_msg
     from colab_leecher import AM_PLAYLIST_URL, AM_MEDIA_TOKEN
-    from colab_leecher.downlader.apple_music import is_am_playlist
+    from colab_leecher.downlader.apple_music import is_am_playlist, is_am_artist
 
     BOT.Mode.am_local = "local" in [a.lower() for a in message.command[1:]]
 
@@ -172,9 +172,11 @@ async def am_music_cmd(client, message):
         await message_deleter(message, msg)
         return
 
-    if not is_am_playlist(AM_PLAYLIST_URL):
+    if not (is_am_playlist(AM_PLAYLIST_URL) or is_am_artist(AM_PLAYLIST_URL)):
         msg = await message.reply_text(
-            "⚠️ <b>AM_PLAYLIST_URL is not a valid Apple Music playlist link.</b>\n\n"
+            "⚠️ <b>AM_PLAYLIST_URL is not a valid Apple Music link.</b>\n\n"
+            "Use a <b>playlist</b> (…/playlist/…) or an <b>artist</b> "
+            "(…/artist/…, all albums are downloaded oldest-first) link.\n\n"
             f"Current value: <code>{AM_PLAYLIST_URL}</code>",
             quote=True,
         )
