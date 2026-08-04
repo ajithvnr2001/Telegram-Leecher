@@ -401,12 +401,16 @@ def _write_am_config():
 
     Folders are relative so every format lands under /music when the binary
     runs with cwd=/music. The media user token comes from credentials.json
-    (AM_MEDIA_TOKEN, set in the Colab notebook).
+    (AM_MEDIA_TOKEN, set in the Colab notebook). AM_AUTH_TOKEN, when set, is
+    pinned as authorization-token so am-downloader never relies on its own
+    GetToken() scrape (which can return an empty JWT from some IPs/locales,
+    silently breaking every webPlayback request as "media-user-token may wrong
+    or expired").
     """
-    from colab_leecher import AM_MEDIA_TOKEN
+    from colab_leecher import AM_MEDIA_TOKEN, AM_AUTH_TOKEN
 
     cfg = f"""media-user-token: "{AM_MEDIA_TOKEN}"
-authorization-token: ""
+authorization-token: "{AM_AUTH_TOKEN}"
 language: ""
 lrc-type: "lyrics"
 lrc-format: "lrc"
