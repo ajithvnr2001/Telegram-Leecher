@@ -88,6 +88,13 @@ unavailable, so it is marked done and never retried). Failed segments
 (`Failed to dl`, token/network errors) stay unmarked and are retried on the
 next run.
 
+**Order guarantee for EVERY mode (playlist / artist-album / MV / songlist,
+manual or auto): download → upload to Telegram → S3 log + marker write.** A
+marker or batch log is only written AFTER the corresponding files reached
+Telegram, so a crash between download and upload is re-run (never silently
+skipped) on the next boot. Local mode writes the same state after saving to
+disk (the upload step is trivially absent there).
+
 The scan regexes are strict (format-name whitelist, per-source prefixes), so a
 playlist resume in a mixed bucket never picks up `album-*`, `mv-batch*` or
 `artist-mv-batch*` keys, and an artist resume never picks up playlist song keys.

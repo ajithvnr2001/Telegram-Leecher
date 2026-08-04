@@ -891,7 +891,10 @@ async def am_download(urls: list, batch_no: int = 0, batch_total: int = 1):
     For every format, only the songs that are still missing that format's
     per-song marker are passed to am-downloader — already-done tracks (from a
     previous, possibly interrupted run) are skipped so nothing is re-downloaded
-    and re-uploaded. Returns list of (format_name, log_path) for the S3 mirror.
+    and re-uploaded. Returns ``(format_logs, markers)``, where markers is a
+    list of ``(fmt, adamID, "")`` collected from each pass but NOT yet written
+    to S3 — task_manager calls :func:`am_write_song_markers` with them AFTER
+    the files are uploaded (download → upload → log append).
     """
     await _am_update_status(
         "<b>🎵 APPLE MUSIC » </b>\n⏳ __Preparing tools...__"
@@ -905,6 +908,7 @@ async def am_download(urls: list, batch_no: int = 0, batch_total: int = 1):
     suffix = "" if batch_total <= 1 else f"-batch{batch_no:02d}"
     done_map = _am_done_formats_for_urls(urls)
     results = []
+    markers = []
     total = len(AM_FORMATS)
     for i, (name, extra_args, file_format) in enumerate(AM_FORMATS, start=1):
         fmt = name.lower()
@@ -922,40 +926,62 @@ async def am_download(urls: list, batch_no: int = 0, batch_total: int = 1):
         await _am_update_status(head)
         log_path = _run_am_pass(name, extra_args, missing, suffix, file_format)
         results.append((name, log_path))
-        _am_mirror_song_markers(log_path, fmt, missing, "")
+        for adam in sorted(_am_parse_pass_log_done(log_path, missing)):
+            if adam:
+                markers.append((fmt, adam, ""))
         await asleep(2)
 
-    return results
+    return results, markers
 
 
-def _am_mirror_song_markers(log_path: str, fmt: str, urls: list, album_id: str, mode: str = "queue"):
-    """Parse a finished pass log and mirror per-song markers to S3 (best effort).
+def am_write_song_markers(markers):
+    """Write collected per-song markers ``(fmt, adamID, album_id)`` to S3.
 
-    Marks every track that completed (downloaded, or permanently unavailable
-    such as legacy tracks in the Atmos pass) so a resume skips it for that
-    format. Tracks that FAILED are deliberately left unmarked → retried later.
+    task_manager calls this ONLY after the corresponding files were uploaded
+    to Telegram (download → upload → log append), so a crash can never leave
+    songs marked-done-but-never-uploaded.
     """
-    if not S3_BUCKET_NAME or not urls:
+    if not S3_BUCKET_NAME or not markers:
         return
     try:
         from colab_leecher.uploader.s3 import ensure_s3_client
         from colab_leecher import S3_BUCKET_NAME as _bucket
 
-        done = _am_parse_pass_log_done(log_path, urls, mode=mode)
-        if not done:
-            return
         client = ensure_s3_client()
-        for u in urls:
-            adam = _am_url_adam_id(u)
-            if adam in done:
-                if album_id:
-                    key = f"{S3_LOG_PREFIX}/album-{album_id}/song-{fmt}-{adam}.log"
-                else:
-                    key = f"{S3_LOG_PREFIX}/song-{fmt}-{adam}.log"
-                client.put_object(Bucket=_bucket, Key=key, Body=b"")
-        logging.info("AM mirrored %d per-song markers from %s", len(done), ospath.basename(log_path))
+        n = 0
+        for fmt, adam, album_id in markers:
+            if not adam:
+                continue
+            if album_id:
+                key = f"{S3_LOG_PREFIX}/album-{album_id}/song-{fmt}-{adam}.log"
+            else:
+                key = f"{S3_LOG_PREFIX}/song-{fmt}-{adam}.log"
+            client.put_object(Bucket=_bucket, Key=key, Body=b"")
+            n += 1
+        if n:
+            logging.info("AM wrote %d per-song markers to S3 (post-upload)", n)
     except Exception as e:
-        logging.error(f"AM per-song marker mirror failed: {e}")
+        logging.error(f"AM per-song marker write failed: {e}")
+
+
+def am_write_mv_markers(adam_ids, artist: bool = False):
+    """Write collected per-MV markers to S3 — called only after upload."""
+    if not S3_BUCKET_NAME or not adam_ids:
+        return
+    try:
+        from colab_leecher.uploader.s3 import ensure_s3_client
+        from colab_leecher import S3_BUCKET_NAME as _bucket
+
+        prefix = "artist-mv" if artist else "mv"
+        client = ensure_s3_client()
+        for adam in sorted(adam_ids):
+            if adam:
+                client.put_object(
+                    Bucket=_bucket, Key=f"{S3_LOG_PREFIX}/{prefix}-song-{adam}.log", Body=b""
+                )
+        logging.info("AM wrote %d per-MV markers to S3 (post-upload)", len(adam_ids))
+    except Exception as e:
+        logging.error(f"AM per-MV marker write failed: {e}")
 
 
 async def am_download_album(album_url: str, album_id: str, album_no: int = 1, album_total: int = 1):
@@ -964,7 +990,9 @@ async def am_download_album(album_url: str, album_id: str, album_no: int = 1, al
     am-downloader expands the album URL into its tracks itself, so a single
     pass covers the whole album. Only the album's songs still missing each
     format are downloaded (via per-song markers) so a crash mid-album only
-    re-downloads the unfinished tracks. Returns list of (format_name, log_path).
+    re-downloads the unfinished tracks. Returns ``(format_logs, markers)`` —
+    markers are written to S3 by task_manager only AFTER upload
+    (download → upload → log append).
     """
     await _am_update_status(
         "<b>🎵 APPLE MUSIC » </b>\n⏳ __Preparing tools...__"
@@ -983,6 +1011,7 @@ async def am_download_album(album_url: str, album_id: str, album_no: int = 1, al
 
     done_map = _am_done_formats_for_urls(track_urls, album_id=album_id)
     results = []
+    markers = []
     total = len(AM_FORMATS)
     for i, (name, extra_args, file_format) in enumerate(AM_FORMATS, start=1):
         fmt = name.lower()
@@ -1005,18 +1034,21 @@ async def am_download_album(album_url: str, album_id: str, album_no: int = 1, al
             pass_urls = missing
         log_path = _run_am_pass(name, extra_args, pass_urls, "", file_format)
         results.append((name, log_path))
-        # Mirror markers using the url list + segment mode that match the log:
+        # Collect markers using the url list + segment mode that match the log:
         # a full pass expands the album URL into Track N of M segments aligned
         # with track_urls; a partial pass logs Queue N of M aligned with
-        # pass_urls (== the missing track URLs).
+        # pass_urls (== the missing track URLs). They are written to S3 only
+        # AFTER the files are uploaded (am_write_song_markers in task_manager).
         if len(pass_urls) == 1:
             mirror_urls, mode = track_urls, "track"
         else:
             mirror_urls, mode = pass_urls, "queue"
-        _am_mirror_song_markers(log_path, fmt, mirror_urls, album_id, mode=mode)
+        for adam in sorted(_am_parse_pass_log_done(log_path, mirror_urls, mode=mode)):
+            if adam:
+                markers.append((fmt, adam, album_id))
         await asleep(2)
 
-    return results
+    return results, markers
 
 
 def fetch_album_tracks(album_url: str) -> list:
@@ -1266,13 +1298,15 @@ def _am_songlist_mirror_log(fmt: str, log_path: str):
 
 async def am_download_mvs(
     urls: list, batch_no: int = 0, batch_total: int = 1, artist: bool = False
-) -> str:
+):
     """Download ONE batch of music videos into /music.
 
     am-downloader picks the highest quality automatically from the config
-    (mv-max: 2160, mv-audio-type: atmos). Returns the log path for the S3
-    mirror step. Only MVs still missing their per-song marker are passed to
-    am-downloader, so an interrupted MV batch resumes where it stopped.
+    (mv-max: 2160, mv-audio-type: atmos). Only MVs still missing their
+    per-song marker are passed to am-downloader, so an interrupted MV batch
+    resumes where it stopped. Returns ``(log_path, done_adam_ids)`` — the
+    caller mirrors the log and writes the markers (am_write_mv_markers) only
+    AFTER the files reached Telegram (download → upload → log append).
     """
     await _am_update_status(
         "<b>🎵 APPLE MUSIC » </b>\n⏳ __Preparing tools...__"
@@ -1287,7 +1321,7 @@ async def am_download_mvs(
     missing = [u for u in urls if _am_url_adam_id(u) not in done]
     if not missing:
         logging.info("AM skip MV batch %d — all videos already done", batch_no)
-        return ""
+        return "", set()
 
     suffix = "" if batch_total <= 1 else f"-batch{batch_no:02d}"
     if batch_total > 1:
@@ -1303,33 +1337,6 @@ async def am_download_mvs(
         )
     await _am_update_status(head)
     log_path = _run_am_pass(AM_MV_FORMAT, [], missing, suffix)
-    _am_mirror_mv_markers(log_path, missing, artist)
+    mv_done = _am_parse_pass_log_done(log_path, missing, mode="queue")
     await asleep(2)
-    return log_path
-
-
-def _am_mirror_mv_markers(log_path: str, urls: list, artist: bool = False):
-    """Parse a finished MV pass log and mirror per-MV markers to S3 (best effort).
-
-    A video whose segment contains ``Decrypted`` is marked done; failed videos
-    stay unmarked so they are retried on the next run.
-    """
-    if not S3_BUCKET_NAME or not urls:
-        return
-    try:
-        from colab_leecher.uploader.s3 import ensure_s3_client
-        from colab_leecher import S3_BUCKET_NAME as _bucket
-
-        done = _am_parse_pass_log_done(log_path, urls)
-        if not done:
-            return
-        prefix = "artist-mv" if artist else "mv"
-        client = ensure_s3_client()
-        for u in urls:
-            adam = _am_url_adam_id(u)
-            if adam in done:
-                key = f"{S3_LOG_PREFIX}/{prefix}-song-{adam}.log"
-                client.put_object(Bucket=_bucket, Key=key, Body=b"")
-        logging.info("AM mirrored %d per-MV markers from %s", len(done), ospath.basename(log_path))
-    except Exception as e:
-        logging.error(f"AM per-MV marker mirror failed: {e}")
+    return log_path, mv_done
