@@ -60,14 +60,32 @@ configured.
    are processed.
 
 **Crash-resume & key isolation:** before running, each pass scans S3 for its
-OWN log keys and skips anything already finished by a previous run:
+OWN log keys and skips anything already finished by a previous run. Resume is
+two-layered:
+
+1. **Batch/album layer** — coarse skip: a batch is done when all 5 format logs
+   exist (`music-logs/<format>-batchNN.log`), an album when all 5
+   `music-logs/album-<id>/<format>.log` exist, an MV batch when its
+   `music-logs/[artist-]mv-batchNN.log` exists.
+2. **Per-song layer** — every individual track gets its own marker the moment
+   a pass finishes it. On a resume, a pass only re-runs the tracks that are
+   STILL MISSING that format, so a crash mid-batch (Colab restart) never
+   re-downloads (or re-uploads) the songs that already made it — and a track
+   that failed in an otherwise-finished batch is retried, not skipped forever.
 
 | Pass | Resume S3 keys (read) | Written keys |
 |---|---|---|
-| Playlist songs | `music-logs/<format>-batchNN.log` (only the 5 format names) | same |
-| Playlist MVs | `music-logs/mv-batchNN.log` | `music-logs/mv-batchNN.log` |
-| Artist albums | `music-logs/album-<id>/…` (all 5 formats present = done) | `music-logs/album-<id>/<format>.log` |
-| Artist MVs | `music-logs/artist-mv-batchNN.log` | `music-logs/artist-mv-batchNN.log` |
+| Playlist songs | `music-logs/<format>-batchNN.log` + `music-logs/song-<format>-<adamID>.log` | both |
+| Playlist MVs | `music-logs/mv-batchNN.log` + `music-logs/mv-song-<adamID>.log` | both |
+| Artist albums | `music-logs/album-<id>/…` + `music-logs/album-<id>/song-<format>-<adamID>.log` | both |
+| Artist MVs | `music-logs/artist-mv-batchNN.log` + `music-logs/artist-mv-song-<adamID>.log` | both |
+
+A per-song marker is written when a track's segment in the pass log shows
+`Decrypted` (media written) **or** `no codec found` (Apple doesn't offer that
+format for the track, e.g. a legacy song in the Atmos pass — permanently
+unavailable, so it is marked done and never retried). Failed segments
+(`Failed to dl`, token/network errors) stay unmarked and are retried on the
+next run.
 
 The scan regexes are strict (format-name whitelist, per-source prefixes), so a
 playlist resume in a mixed bucket never picks up `album-*`, `mv-batch*` or
