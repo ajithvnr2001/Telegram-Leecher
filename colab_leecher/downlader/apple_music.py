@@ -428,7 +428,12 @@ max-memory-limit: 256
 decrypt-m3u8-port: "127.0.0.1:10020"
 get-m3u8-port: "127.0.0.1:20020"
 get-m3u8-from-device: true
-exit-on-error: false
+# Keep exit-on-error TRUE: am-downloader otherwise drops into an interactive
+# "press Enter to retry" loop on the FIRST erroring track (e.g. an
+# explicit-content-blocked MV), and with no TTY that loops forever. With
+# exit-on-error the batch still processes ALL tracks once (good ones get
+# downloaded) and then exits, which _run_am_pass treats as a pass.
+exit-on-error: true
 get-m3u8-mode: all
 aac-type: aac-lc
 alac-max: 192000
