@@ -24,6 +24,12 @@ S3_REGION = credentials.get("S3_REGION", "") or "us-east-1"
 # Apple Music config (optional — used by /amusic)
 AM_PLAYLIST_URL = credentials.get("AM_PLAYLIST_URL", "") or ""
 AM_MEDIA_TOKEN = credentials.get("AM_MEDIA_TOKEN", "") or ""
+# Optional pinned Authorization JWT for am-downloader. When set, am-downloader
+# prefers it over its own GetToken() scrape (which can return an empty JWT from
+# some IPs/locales — Apple then silently rejects every webPlayback request,
+# surfacing as "media-user-token may wrong or expired"). Leave empty to use the
+# built-in scrape.
+AM_AUTH_TOKEN = credentials.get("AM_AUTH_TOKEN", "") or ""
 
 
 logging.basicConfig(level=logging.INFO)
