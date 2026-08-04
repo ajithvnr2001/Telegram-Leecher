@@ -95,6 +95,33 @@ Telegram, so a crash between download and upload is re-run (never silently
 skipped) on the next boot. Local mode writes the same state after saving to
 disk (the upload step is trivially absent there).
 
+**Crash anatomy (songlist mode, worst case — dead mid-chunk):** a chunk is 25
+songs of one format. Scenarios:
+
+1. **Crash during the chunk's download** (e.g. song 13 of 25): the chunk
+   never completed → no dedupe lines appended → `/music` (tmpfs) is wiped on
+   restart → on resume the **entire chunk** (those 25 songs) re-runs. Chunks
+   that finished before are skipped via their `DONE` lines. Loss window = the
+   in-flight chunk only.
+2. **Crash between download-finish and upload-finish**: upload did complete
+   or partially complete? The dedupe append only happens AFTER the whole
+   chunk's upload loop returns — so the chunk stays unmarked → fully re-runs
+   on resume → any files that WERE uploaded re-upload (a ≤25-file duplicate
+   burst in the dump channel is possible in this narrow crash window — the
+   price of the single-file resume log; nothing is ever LOST, at worst
+   briefly duplicated).
+3. **Crash mid-upload (exception)**: the task dies, dedupe unmarked → same as
+   case 2 on resume.
+4. **Song-level failure** (one track keeps failing): its `DONE` line never
+   appears so it is retried every run; all its siblings are unaffected.
+
+**Why no song or format can be missed on resume:** the songlist file itself is
+re-parsed at startup (the full target set), and *missing* per format is
+computed as `songs − DONE-lines`. A format pass only completes when its own
+`songlist-<fmt>.log` wrote every needed `DONE` line — a crash midway through
+format 3 keeps formats 3 (partially), 4 and 5 pending and they re-run in
+order.
+
 The scan regexes are strict (format-name whitelist, per-source prefixes), so a
 playlist resume in a mixed bucket never picks up `album-*`, `mv-batch*` or
 `artist-mv-batch*` keys, and an artist resume never picks up playlist song keys.
