@@ -252,7 +252,7 @@ async def taskScheduler():
             await SendLogs(False)
         return
 
-    if BOT.Mode.mode != "am-music":
+    if BOT.Mode.mode not in ("am-music", "am-songlist"):
         await calDownSize(BOT.SOURCE)
 
         if not is_dir:
