@@ -40,6 +40,12 @@ AM_AUTH_TOKEN = credentials.get("AM_AUTH_TOKEN", "") or ""
 # music-video pass.
 AM_ALBUM_LIMIT = int(credentials.get("AM_ALBUM_LIMIT", 0) or 0)
 AM_MV_LIMIT = int(credentials.get("AM_MV_LIMIT", 0) or 0)
+# Songlist mode: when AM_SONGLIST_AUTO is truthy the bot starts downloading
+# /content/songlist.txt by itself right after startup — no /amusic "START"
+# press needed ("ticked" in the Colab cell = True).
+AM_SONGLIST_AUTO = str(credentials.get("AM_SONGLIST_AUTO", "") or "").lower() in (
+    "1", "true", "yes", "on",
+) or credentials.get("AM_SONGLIST_AUTO") is True
 
 
 logging.basicConfig(level=logging.INFO)

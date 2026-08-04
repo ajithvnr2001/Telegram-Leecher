@@ -140,23 +140,40 @@ async def s3_leech_cmd(client, message):
 
 @colab_bot.on_message(filters.command("amusic") & filters.private)
 async def am_music_cmd(client, message):
-    """Download the predefined Apple Music playlist in ALL formats.
+    """Download Apple Music content in ALL formats.
 
-    `/amusic`        → download to /music and upload everything to Telegram
-    `/amusic local`  → download to /content (Colab disk) only, no upload
+    `/amusic`         → playlist/artist sources to /music + upload to Telegram
+    `/amusic local`   → same, but saved to /content only (no upload)
+    `/amusic songs`   → the song list in /content/songlist.txt (single dedupe
+                        log in S3, auto-resume after restarts)
+    `/amusic songs local` → songlist mode saved locally, no upload
     """
     global BOT, src_request_msg
     from colab_leecher import AM_PLAYLIST_URL, AM_ARTIST_URL, AM_MEDIA_TOKEN
     from colab_leecher.downlader.apple_music import is_am_playlist, is_am_artist
 
-    BOT.Mode.am_local = "local" in [a.lower() for a in message.command[1:]]
+    args = [a.lower() for a in message.command[1:]]
+    BOT.Mode.am_local = "local" in args
+    songs_mode = "songs" in args
 
-    if not AM_PLAYLIST_URL and not AM_ARTIST_URL:
+    if songs_mode and not os.path.exists("/content/songlist.txt"):
+        msg = await message.reply_text(
+            "⚠️ <b>Songlist file missing.</b>\n\nUpload <code>/content/songlist.txt</code> "
+            "to the Colab runtime (album headers + one Apple Music song URL or "
+            "adamID per line), then send <code>/amusic songs</code> again.",
+            quote=True,
+        )
+        await sleep(15)
+        await message_deleter(message, msg)
+        return
+
+    if not songs_mode and not AM_PLAYLIST_URL and not AM_ARTIST_URL:
         msg = await message.reply_text(
             "⚠️ <b>Apple Music source not set.</b>\n\nSet <code>AM_PLAYLIST_URL</code> "
             "(playlist) or <code>AM_ARTIST_URL</code> (artist albums) — or both — "
             "plus <code>AM_MEDIA_TOKEN</code> in the Colab notebook cell, then "
-            "restart the bot.",
+            "restart the bot. For an arbitrary song list drop it in "
+            "<code>/content/songlist.txt</code> and use <code>/amusic songs</code>.",
             quote=True,
         )
         await sleep(15)
@@ -173,35 +190,50 @@ async def am_music_cmd(client, message):
         await message_deleter(message, msg)
         return
 
-    for lbl, url in (("AM_PLAYLIST_URL", AM_PLAYLIST_URL), ("AM_ARTIST_URL", AM_ARTIST_URL)):
-        if url and not (is_am_playlist(url) or is_am_artist(url)):
-            msg = await message.reply_text(
-                "⚠️ <b>"
-                + lbl
-                + " is not a valid Apple Music link.</b>\n\n"
-                "Use a <b>playlist</b> (…/playlist/…) or an <b>artist</b> "
-                "(…/artist/…, all albums are downloaded oldest-first) link.\n\n"
-                f"Current value: <code>{url}</code>",
-                quote=True,
-            )
-            await sleep(15)
-            await message_deleter(message, msg)
-            return
+    if not songs_mode:
+        for lbl, url in (("AM_PLAYLIST_URL", AM_PLAYLIST_URL), ("AM_ARTIST_URL", AM_ARTIST_URL)):
+            if url and not (is_am_playlist(url) or is_am_artist(url)):
+                msg = await message.reply_text(
+                    "⚠️ <b>"
+                    + lbl
+                    + " is not a valid Apple Music link.</b>\n\n"
+                    "Use a <b>playlist</b> (…/playlist/…) or an <b>artist</b> "
+                    "(…/artist/…, all albums are downloaded oldest-first) link.\n\n"
+                    f"Current value: <code>{url}</code>",
+                    quote=True,
+                )
+                await sleep(15)
+                await message_deleter(message, msg)
+                return
 
-    BOT.Mode.mode = "am-music"
+    BOT.Mode.mode = "am-songlist" if songs_mode else "am-music"
     BOT.Mode.ytdl = False
 
-    am_lines = []
-    if AM_PLAYLIST_URL:
-        am_lines.append(f"📀 <b>Playlist »</b> <code>{AM_PLAYLIST_URL}</code>")
-    if AM_ARTIST_URL:
-        am_lines.append(f"🎤 <b>Artist »</b> <code>{AM_ARTIST_URL}</code>")
-    am_src = "\n".join(am_lines)
+    if songs_mode:
+        from colab_leecher.downlader.apple_music import fetch_songlist
 
+        try:
+            song_urls, groups = fetch_songlist("/content/songlist.txt")
+        except Exception as e:
+            await message.reply_text(f"⚠️ Songlist parse failed: <code>{e}</code>", quote=True)
+            return
+        am_src = (
+            f"📋 <b>Songlist »</b> <code>/content/songlist.txt</code>\n"
+            f"🎶 <b>{len(song_urls)} unique songs</b> from <b>{len(groups)} album group(s)</b>"
+        )
+    else:
+        am_lines = []
+        if AM_PLAYLIST_URL:
+            am_lines.append(f"📀 <b>Playlist »</b> <code>{AM_PLAYLIST_URL}</code>")
+        if AM_ARTIST_URL:
+            am_lines.append(f"🎤 <b>Artist »</b> <code>{AM_ARTIST_URL}</code>")
+        am_src = "\n".join(am_lines)
+
+    src_kind = "the songlist" if songs_mode else "the predefined source(s)"
     if BOT.Mode.am_local:
         text = (
             "<b>🎵 APPLE MUSIC » LOCAL SAVE 💾</b>\n\n"
-            "The predefined source(s) will be downloaded in <b>ALL formats</b> "
+            f"{src_kind.capitalize()} will be downloaded in <b>ALL formats</b> "
             "(ALAC, Dolby Atmos, AAC-LC 256, AAC 128, HE-AAC 64) plus "
             "<b>Music Videos</b> at max quality into "
             "<code>/content</code> — <b>no Telegram upload</b>.\n\n"
@@ -210,12 +242,14 @@ async def am_music_cmd(client, message):
     else:
         text = (
             "<b>🎵 APPLE MUSIC » </b>\n\n"
-            "The predefined source(s) will be downloaded in <b>ALL formats</b> "
+            f"{src_kind.capitalize()} will be downloaded in <b>ALL formats</b> "
             "(ALAC, Dolby Atmos, AAC-LC 256, AAC 128, HE-AAC 64) plus "
             "<b>Music Videos</b> at max quality into "
             "<code>/music</code>, then uploaded to Telegram.\n\n"
             f"{am_src}"
         )
+    if songs_mode:
+        text += "\n\n🔁 <i>Resume: single appended dedupe log in S3 — restart-safe.</i>"
 
     await message.reply_text(
         text,
@@ -640,7 +674,8 @@ async def help_command(client, message):
         "Send /start To Check If I am alive 🤨\n\n"
         "Send /tupload, /gdupload, /drupload, /ytupload to start transloading 🚀\n\n"
         "Send /amusic to download the predefined Apple Music playlist in ALL formats (ALAC / Atmos / AAC) + Music Videos at max quality, to /music and upload to Telegram 🎵\n"
-        "Send /amusic <code>local</code> to save it on the Colab disk (/content) without uploading 📦\n\n"
+        "Send /amusic <code>local</code> to save it on the Colab disk (/content) without uploading 📦\n"
+        "Send /amusic <code>songs</code> to bulk-download the song list in /content/songlist.txt (single S3 dedupe log, restart-proof) 📋\n\n"
         "Send /s3upload to mirror downloads to your S3 / Wasabi bucket ☁️\n"
         "Send /s3leech to leech objects from S3 / Wasabi to Telegram 📥\n"
         "Send /s3bucket <code>name</code> to change the destination S3 bucket\n"
@@ -678,4 +713,40 @@ async def help_command(client, message):
 
 
 logging.info("Colab Leecher Started !")
+
+# Auto songlist mode: with AM_SONGLIST_AUTO enabled ("ticked") and a songlist
+# at /content/songlist.txt, start the download by ourselves right after the
+# bot comes online — no pressing the /amusic START button. Mirrors the exact
+# state the "am-start" callback sets before scheduling taskScheduler().
+from colab_leecher import AM_SONGLIST_AUTO, AM_MEDIA_TOKEN as _AM_MEDIA_TOKEN
+
+if AM_SONGLIST_AUTO and _AM_MEDIA_TOKEN and os.path.exists("/content/songlist.txt"):
+    async def _am_auto_songlist():
+        # Wait for the Telegram connection before sending the status message.
+        for _ in range(90):
+            if getattr(colab_bot, "is_connected", False):
+                break
+            await sleep(10)
+        await sleep(3)
+        logging.info("Auto-starting songlist task (AM_SONGLIST_AUTO).")
+        BOT.Mode.mode = "am-songlist"
+        BOT.Mode.type = "normal"
+        BOT.Mode.ytdl = False
+        MSG.status_msg = await colab_bot.send_message(
+            chat_id=OWNER,
+            text="#STARTING_TASK\n\n**Auto — downloading /content/songlist.txt in ALL formats (S3 dedupe resume)...🎵**",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Cancel ❌", callback_data="cancel")]],
+            ),
+        )
+        BOT.State.task_going = True
+        BOT.State.started = False
+        BotTimes.start_time = datetime.now()
+        event_loop = get_event_loop()
+        BOT.TASK = event_loop.create_task(taskScheduler())  # type: ignore
+        await BOT.TASK
+        BOT.State.task_going = False
+
+    get_event_loop().create_task(_am_auto_songlist())
+
 colab_bot.run()
