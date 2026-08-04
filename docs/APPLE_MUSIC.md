@@ -110,7 +110,10 @@ just stay on the Colab disk.
    `am-logs/songlist-dedupe.log`, which is continuously mirrored to
    `s3://<bucket>/music-logs/songlist-dedupe.log`. On startup the S3 copy is
    merged with the local one, so a Colab restart — even a fresh runtime —
-   skips everything already done ("resume based on S3 log").
+   skips everything already done ("resume based on S3 log"). **Order is
+   critical: download → upload to Telegram → log append.** A track is only
+   marked done AFTER its files landed in Telegram — a crash between download
+   and upload re-runs that chunk next boot instead of losing the files.
 4. The am-downloader output of every chunk of the same format is appended
    into ONE cumulative log (`am-logs/<format>-songlist.log`, mirrored to
    `music-logs/songlist/<format>.log`).

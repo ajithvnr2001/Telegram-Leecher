@@ -1185,11 +1185,13 @@ async def am_download_songlist(song_urls: list, on_new_files=None):
 
     Resume state lives in a SINGLE appended dedupe log mirroring
     ``music-logs/songlist-dedupe.log`` in S3: every completed track×format is
-    a ``DONE <format> <adamID>`` line, so a crash/resume (even a fresh Colab
-    runtime) only re-downloads what's still missing. The am-downloader output
-    of every chunk of the same format is appended into ONE format log
+    a ``DONE <format> <adamID>`` line — but only AFTER its files were uploaded
+    (download → upload → log append), so a crash between download and upload
+    re-runs the chunk instead of losing it. The am-downloader output of every
+    chunk of the same format is appended into ONE format log
     (`` songlist/<fmt>-songlist.log ``). ``on_new_files(fmt, new_files)`` is
-    awaited after every chunk (task manager uses it to upload/report).
+    awaited after every chunk (task manager uses it to upload/report) and must
+    raise on upload failure — the chunk then stays unmarked and is retried.
     """
     await _am_update_status(
         "<b>🎵 APPLE MUSIC » </b>\n⏳ __Preparing tools...__"
@@ -1232,15 +1234,19 @@ async def am_download_songlist(song_urls: list, on_new_files=None):
                 results.append((name, log_path))
             chunk_done = _am_parse_pass_log_done(log_path, chunk, mode="queue", offset=offset)
             newly = {(fmt, a) for a in chunk_done if (fmt, a) not in done}
-            done |= newly
-            _am_songlist_dedupe_append(newly)
             # Mirror the appended per-format log too (best effort), so even a
             # crash leaves the full traceback of what was attempted.
             _am_songlist_mirror_log(fmt, log_path)
+            # ORDER IS CRITICAL: 1) download (above) -> 2) upload -> 3) dedupe
+            # append. A track is marked DONE only AFTER its files reached
+            # Telegram, so a crash between download and upload re-runs the
+            # chunk on the next boot instead of losing the files forever.
             if on_new_files is not None:
                 new_files = sorted(_am_files_snapshot() - before)
                 if new_files:
                     await on_new_files(fmt, new_files)
+            done |= newly
+            _am_songlist_dedupe_append(newly)
             await asleep(1)
     return results
 
