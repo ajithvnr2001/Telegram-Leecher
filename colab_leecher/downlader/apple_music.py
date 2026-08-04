@@ -120,6 +120,11 @@ def is_am_playlist(url: str) -> bool:
     return "music.apple.com" in url and "/playlist/" in url
 
 
+def is_am_artist(url: str) -> bool:
+    """True for https://music.apple.com/<cc>/artist/<name>/<id>[/...] links."""
+    return "music.apple.com" in url and "/artist/" in url
+
+
 def set_am_music_path(path: str):
     """Point the AM working directory at ``path`` and derive the log/config
     sub-paths from it.
@@ -203,6 +208,127 @@ def fetch_playlist_mvs(playlist_url: str, limit: int = 0) -> list:
     _, mvs = _parse_playlist_page(playlist_url)
     logging.info("AM playlist has %d music videos", len(mvs))
     return mvs[:limit] if limit else mvs
+
+
+def _am_amp_token() -> str:
+    """Fetch a Bearer JWT for the amp-api endpoints.
+
+    am-downloader scrapes this from the Apple Music web bundle at startup
+    (ampapi.GetToken). Some IPs/locales get an EMPTY JWT from that scrape and
+    Apple silently 401s every amp-api/webPlayback call afterwards. When
+    AM_AUTH_TOKEN is pinned in credentials.json we prefer it (it is a real,
+    long-lived token), falling back to the same scrape the binary does.
+    """
+    from colab_leecher import AM_AUTH_TOKEN
+
+    if AM_AUTH_TOKEN:
+        return AM_AUTH_TOKEN
+
+    import urllib.request
+
+    hdr = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    html = urllib.request.urlopen(
+        urllib.request.Request("https://music.apple.com", headers=hdr), timeout=60
+    ).read().decode("utf-8", "ignore")
+    m = re.search(r"/assets/index~[^/]+\.js", html)
+    if not m:
+        raise RuntimeError("Could not locate the Apple Music web bundle (index~*.js)")
+    body = urllib.request.urlopen(
+        urllib.request.Request("https://music.apple.com" + m.group(0), headers=hdr),
+        timeout=60,
+    ).read().decode("utf-8", "ignore")
+    tok = re.search(r"eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+", body)
+    if not tok:
+        raise RuntimeError("Could not extract a JWT from the Apple Music web bundle")
+    return tok.group(0)
+
+
+def _am_amp_get(url: str, token: str) -> dict:
+    """GET an amp-api URL with the Bearer JWT. Raises on non-200."""
+    import urllib.request
+
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Origin": "https://music.apple.com",
+            "Accept": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"amp-api returned HTTP {resp.status}")
+        return json.loads(resp.read().decode("utf-8", "ignore"))
+
+
+def _am_api_paginate(base_url: str, token: str, field: str) -> list:
+    """Yield all ``data`` entries from a paginated amp-api JSON payload."""
+    out = []
+    offset = 0
+    while True:
+        sep = "&" if "?" in base_url else "?"
+        data = _am_amp_get(f"{base_url}{sep}limit=100&offset={offset}&l=en-GB", token)
+        items = data.get(field, [])
+        if not isinstance(items, list) or not items:
+            break
+        out.extend(items)
+        if not data.get("next"):
+            break
+        offset += len(items)
+    return out
+
+
+def fetch_artist_albums(artist_url: str, limit: int = 0) -> list:
+    """Return album URLs for an artist, oldest release first.
+
+    Paginates amp-api ``/catalog/<cc>/artists/<id>/albums`` (the same
+    relationship am-downloader's checkArtist uses, ``limit=100`` pages) and
+    sorts by release date ascending so the classic albums come first — the
+    same order am-downloader presents them in its artist picker.
+    """
+    m = re.search(r"music\.apple\.com/(\w{2})/artist/.+?/(\d+)(?:$|[/?#])", artist_url)
+    if not m:
+        raise RuntimeError(f"Not a valid Apple Music artist URL: {artist_url}")
+    cc, artist_id = m.group(1), m.group(2)
+    token = _am_amp_token()
+    base = f"https://amp-api.music.apple.com/v1/catalog/{cc}/artists/{artist_id}/albums"
+    items = _am_api_paginate(base, token, "data")
+    rows = []
+    for it in items:
+        a = it.get("attributes") or {}
+        rows.append((a.get("releaseDate") or "", a.get("url") or "", a.get("name") or ""))
+    rows.sort(key=lambda r: r[0])  # oldest first
+    urls = [r[1] for r in rows if r[1]]
+    if limit:
+        urls = urls[:limit]
+    logging.info("AM artist has %d albums (showing %d)", len(rows), len(urls))
+    return urls
+
+
+def fetch_artist_mvs(artist_url: str, limit: int = 0) -> list:
+    """Return music-video URLs for an artist (amp-api ``music-videos``).
+
+    Apple does not expose an album→music-video mapping in this API, so the
+    MV pass for an artist is done artist-wide: every music video credited to
+    the artist gets downloaded at max quality.
+    """
+    m = re.search(r"music\.apple\.com/(\w{2})/artist/.+?/(\d+)(?:$|[/?#])", artist_url)
+    if not m:
+        raise RuntimeError(f"Not a valid Apple Music artist URL: {artist_url}")
+    cc, artist_id = m.group(1), m.group(2)
+    token = _am_amp_token()
+    base = f"https://amp-api.music.apple.com/v1/catalog/{cc}/artists/{artist_id}/music-videos"
+    items = _am_api_paginate(base, token, "data")
+    urls = []
+    for it in items:
+        a = it.get("attributes") or {}
+        if a.get("url"):
+            urls.append(a["url"])
+    if limit:
+        urls = urls[:limit]
+    logging.info("AM artist has %d music videos (taking %d)", len(urls), len(items))
+    return urls
 
 
 async def _am_update_status(head: str):
@@ -522,6 +648,26 @@ def _am_log_key(name: str, suffix: str = "") -> str:
     return f"{S3_LOG_PREFIX}/{name.lower()}{suffix}.log"
 
 
+def _am_album_log_key(album_id: str, name: str, suffix: str = "") -> str:
+    """S3 object key for one album: ``music-logs/album-<id>/<format>[<suffix>].log``."""
+    return f"{S3_LOG_PREFIX}/album-{album_id}/{name.lower()}{suffix}.log"
+
+
+def _am_scan_s3(prefix: str) -> list:
+    """List S3 object keys under ``prefix`` (best effort, [] on failure)."""
+    from colab_leecher.uploader.s3 import ensure_s3_client
+
+    keys = []
+    try:
+        client = ensure_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=S3_BUCKET_NAME, Prefix=prefix):
+            keys.extend(obj["Key"] for obj in page.get("Contents", []))
+    except Exception as e:
+        logging.error(f"AM resume: S3 scan failed for {prefix!r}: {e}")
+    return keys
+
+
 def am_completed_batches() -> set:
     """Batch numbers (int) already finished in a PREVIOUS run in S3.
 
@@ -537,34 +683,19 @@ def am_completed_batches() -> set:
     completed and the log made its way to S3. Re-running /amusic then
     skips those batches instead of restarting from scratch.
     """
-    from colab_leecher.uploader.s3 import ensure_s3_client
-
     batch_to_formats = {}
-    try:
-        client = ensure_s3_client()
-    except Exception as e:
-        logging.error(f"AM resume: S3 client init failed ({e}) — will start from batch 1")
-        return set()
-
-    try:
-        paginator = client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(
-            Bucket=S3_BUCKET_NAME, Prefix=f"{S3_LOG_PREFIX}/"
-        ):
-            for obj in page.get("Contents", []):
-                key = obj["Key"]
-                m = re.match(
-                    rf"^{re.escape(S3_LOG_PREFIX)}/(.+?)(?:-batch(\d+))?\.log$",
-                    key,
-                )
-                if not m:
-                    continue
-                fmt = m.group(1)
-                batch = int(m.group(2)) if m.group(2) else 0
-                batch_to_formats.setdefault(batch, set()).add(fmt)
-    except Exception as e:
-        logging.error(f"AM resume: S3 log scan failed ({e})")
-        return set()
+    for key in _am_scan_s3(f"{S3_LOG_PREFIX}/"):
+        # Only top-level music-logs/<format>[-batchNN].log entries count;
+        # album-scoped keys (music-logs/album-<id>/...) are tracked separately.
+        m = re.match(
+            rf"^{re.escape(S3_LOG_PREFIX)}/([^/]+?)(?:-batch(\d+))?\.log$",
+            key,
+        )
+        if not m:
+            continue
+        fmt = m.group(1)
+        batch = int(m.group(2)) if m.group(2) else 0
+        batch_to_formats.setdefault(batch, set()).add(fmt)
 
     required = {name.lower() for name, _, _ in AM_FORMATS}
     return {batch for batch, fmts in batch_to_formats.items() if required.issubset(fmts)}
@@ -577,31 +708,49 @@ def am_completed_mv_batches() -> set:
     batch counts as completed when its own log ``music-logs/mv-batchNN.log``
     exists in S3.
     """
-    from colab_leecher.uploader.s3 import ensure_s3_client
-
     done = set()
-    try:
-        client = ensure_s3_client()
-    except Exception as e:
-        logging.error(f"AM resume: S3 client init failed ({e}) — will start MV from batch 1")
-        return done
+    for key in _am_scan_s3(f"{S3_LOG_PREFIX}/"):
+        m = re.match(rf"^{re.escape(S3_LOG_PREFIX)}/mv-batch(\d+)\.log$", key)
+        if m:
+            done.add(int(m.group(1)))
+    return done
 
-    try:
-        paginator = client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(
-            Bucket=S3_BUCKET_NAME, Prefix=f"{S3_LOG_PREFIX}/"
-        ):
-            for obj in page.get("Contents", []):
-                key = obj["Key"]
-                m = re.match(
-                    rf"^{re.escape(S3_LOG_PREFIX)}/mv-batch(\d+)\.log$",
-                    key,
-                )
-                if m:
-                    done.add(int(m.group(1)))
-    except Exception as e:
-        logging.error(f"AM resume: S3 MV log scan failed ({e})")
-        return set()
+
+def am_completed_albums() -> set:
+    """Album IDs (str) already fully downloaded in a PREVIOUS run.
+
+    An album counts as completed when EVERY AM_FORMATS log exists under
+    ``music-logs/album-<id>/`` (e.g. alac.log, atmos.log, aac-lc-256.log,
+    aac-128.log, he-aac-64.log) — same convention as the playlist batches.
+    """
+    required = {name.lower() for name, _, _ in AM_FORMATS}
+    done = set()
+    # Group keys by album id.
+    per_album = {}
+    for key in _am_scan_s3(f"{S3_LOG_PREFIX}/album-"):
+        m = re.match(
+            rf"^{re.escape(S3_LOG_PREFIX)}/album-([^/]+)/([^/]+?)\.log$", key
+        )
+        if m:
+            per_album.setdefault(m.group(1), set()).add(m.group(2))
+    return {
+        album_id
+        for album_id, fmts in per_album.items()
+        if required.issubset(fmts)
+    }
+
+
+def am_completed_artist_mv_batches() -> set:
+    """Batch numbers (int) of the artist-wide MV pass already finished.
+
+    Mirrors ``music-logs/artist-mv-batchNN.log`` — present means that batch
+    of artist music videos was downloaded in a previous run.
+    """
+    done = set()
+    for key in _am_scan_s3(f"{S3_LOG_PREFIX}/"):
+        m = re.match(rf"^{re.escape(S3_LOG_PREFIX)}/artist-mv-batch(\d+)\.log$", key)
+        if m:
+            done.add(int(m.group(1)))
     return done
 
 
@@ -671,3 +820,36 @@ async def am_download_mvs(urls: list, batch_no: int = 0, batch_total: int = 1) -
     log_path = _run_am_pass(AM_MV_FORMAT, [], urls, suffix)
     await asleep(2)
     return log_path
+
+
+async def am_download_album(album_url: str, album_id: str, album_no: int = 1, album_total: int = 1):
+    """Download ONE album in ALL formats into /music.
+
+    am-downloader expands the album URL into its tracks itself, so a single
+    pass covers the whole album. Returns list of (format_name, log_path) for
+    the S3 mirror step, mirroring under ``music-logs/album-<id>/``.
+    """
+    await _am_update_status(
+        "<b>🎵 APPLE MUSIC » </b>\n⏳ __Preparing tools...__"
+    )
+    await ensure_am_tools()
+    start_am_wrapper()
+    _write_am_config()
+
+    os.chdir(AM_MUSIC_PATH)
+
+    results = []
+    total = len(AM_FORMATS)
+    for i, (name, extra_args, file_format) in enumerate(AM_FORMATS, start=1):
+        head = (
+            f"<b>🎵 APPLE MUSIC » {name}</b>\n"
+            f"⏳ __Album {album_no}/{album_total} ({album_id}) — {name} format "
+            f"({i}/{total})...__"
+        )
+        await _am_update_status(head)
+        # Album pass: no -batchNN suffix; resume is per-album via S3 keys.
+        log_path = _run_am_pass(name, extra_args, [album_url], "", file_format)
+        results.append((name, log_path))
+        await asleep(2)
+
+    return results

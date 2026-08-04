@@ -30,6 +30,11 @@ AM_MEDIA_TOKEN = credentials.get("AM_MEDIA_TOKEN", "") or ""
 # surfacing as "media-user-token may wrong or expired"). Leave empty to use the
 # built-in scrape.
 AM_AUTH_TOKEN = credentials.get("AM_AUTH_TOKEN", "") or ""
+# Artist mode caps: 0 = everything. AM_ALBUM_LIMIT limits how many of the
+# artist's albums are downloaded (oldest first), AM_MV_LIMIT caps the artist
+# music-video pass.
+AM_ALBUM_LIMIT = int(credentials.get("AM_ALBUM_LIMIT", 0) or 0)
+AM_MV_LIMIT = int(credentials.get("AM_MV_LIMIT", 0) or 0)
 
 
 logging.basicConfig(level=logging.INFO)
