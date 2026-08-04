@@ -714,20 +714,46 @@ async def help_command(client, message):
 
 logging.info("Colab Leecher Started !")
 
-# Auto songlist mode: with AM_SONGLIST_AUTO enabled ("ticked") and a songlist
-# at /content/songlist.txt, start the download by ourselves right after the
-# bot comes online — no pressing the /amusic START button. Mirrors the exact
-# state the "am-start" callback sets before scheduling taskScheduler().
+# Auto songlist mode: with AM_SONGLIST_AUTO enabled ("ticked"), start the
+# download by ourselves right after the bot comes online — no pressing the
+# /amusic START button. Mirrors the exact state the "am-start" callback sets
+# before scheduling taskScheduler(). If the file isn't there yet (e.g. the
+# cell is still fetching it), WAIT for it for up to ~30 min and say so in
+# Telegram instead of idling silently.
 from colab_leecher import AM_SONGLIST_AUTO, AM_MEDIA_TOKEN as _AM_MEDIA_TOKEN
 
-if AM_SONGLIST_AUTO and _AM_MEDIA_TOKEN and os.path.exists("/content/songlist.txt"):
+if AM_SONGLIST_AUTO and _AM_MEDIA_TOKEN:
     async def _am_auto_songlist():
-        # Wait for the Telegram connection before sending the status message.
+        # Wait for the Telegram connection before doing anything.
         for _ in range(90):
             if getattr(colab_bot, "is_connected", False):
                 break
             await sleep(10)
         await sleep(3)
+        # Wait for the songlist file to appear (cell fetch may lag the bot start).
+        if not os.path.exists("/content/songlist.txt"):
+            warn = await colab_bot.send_message(
+                chat_id=OWNER,
+                text=(
+                    "⚠️ <b>Songlist AUTO is ticked</b> but <code>/content/songlist.txt</code> "
+                    "is missing — waiting up to ~30 minutes for it (the cell may still be "
+                    "fetching SONGLIST_URL, or upload the file to /content)."
+                ),
+            )
+            for _ in range(60):  # 60 × 30s = 30 min
+                if os.path.exists("/content/songlist.txt"):
+                    break
+                await sleep(30)
+            else:
+                try:
+                    await warn.edit_text(
+                        "❌ Songlist never arrived — NOT starting. Upload /content/songlist.txt "
+                        "and restart the bot (or send /amusic songs)."
+                    )
+                except Exception:
+                    pass
+                logging.warning("AM_SONGLIST_AUTO: songlist.txt never arrived — aborting auto-start")
+                return
         logging.info("Auto-starting songlist task (AM_SONGLIST_AUTO).")
         BOT.Mode.mode = "am-songlist"
         BOT.Mode.type = "normal"
