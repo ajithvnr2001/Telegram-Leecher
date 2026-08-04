@@ -349,10 +349,19 @@ async def Do_AM_Music(am_url, is_zip, is_unzip, is_dualzip):
         )
 
     done_files = set()
+    n_fmts = len(am_mod.AM_FORMATS)
     for batch_no, batch in enumerate(batches, start=1):
         if batch_no in completed:
-            logging.info("AM skip batch %d (already completed)", batch_no)
-            continue
+            # Coarse check passed, but the per-song markers are authoritative:
+            # if any song still misses a format (failed in a previous run),
+            # re-run the batch — am_download only passes the missing songs.
+            done_map = am_mod._am_done_formats_for_urls(batch)
+            if all(
+                len(done_map.get(u, set())) >= n_fmts for u in batch
+            ):
+                logging.info("AM skip batch %d (already completed)", batch_no)
+                continue
+            logging.info("AM batch %d logs present but some songs lack formats — resuming", batch_no)
         before = am_mod._am_files_snapshot()
 
         # 2) Download this batch in ALL formats
@@ -415,8 +424,13 @@ async def Do_AM_Music(am_url, is_zip, is_unzip, is_dualzip):
         completed_mv = am_mod.am_completed_mv_batches()
         for mv_no, mv_batch in enumerate(mv_batches, start=1):
             if mv_no in completed_mv:
-                logging.info("AM skip MV batch %d (already completed)", mv_no)
-                continue
+                # Per-MV markers are authoritative; only skip if every video
+                # really downloaded (failed ones get retried).
+                done = am_mod._am_mv_done_for_urls(mv_batch)
+                if all(am_mod._am_url_adam_id(u) in done for u in mv_batch):
+                    logging.info("AM skip MV batch %d (already completed)", mv_no)
+                    continue
+                logging.info("AM MV batch %d logs present but some videos failed — resuming", mv_no)
             before = am_mod._am_files_snapshot()
             mv_log = await am_mod.am_download_mvs(mv_batch, mv_no, mv_total)
 
@@ -424,7 +438,7 @@ async def Do_AM_Music(am_url, is_zip, is_unzip, is_dualzip):
                 from colab_leecher.uploader.s3 import ensure_s3_client
                 from colab_leecher import S3_BUCKET_NAME
 
-                if S3_BUCKET_NAME:
+                if S3_BUCKET_NAME and mv_log:
                     key = am_mod._am_mv_log_key(mv_no, artist=False)
                     ensure_s3_client().upload_file(mv_log, S3_BUCKET_NAME, key)
                     logging.info("AM MV log mirrored to s3://%s/%s", S3_BUCKET_NAME, key)
@@ -534,11 +548,23 @@ async def Do_AM_Artist(am_url, is_zip, is_unzip, is_dualzip):
         )
 
     done_files = set()
+    n_fmts = len(am_mod.AM_FORMATS)
     for album_no, album_url in enumerate(albums, start=1):
         album_id = album_id_of(album_url)
         if album_id in completed_albums:
-            logging.info("AM skip album %s (already completed)", album_id)
-            continue
+            # Coarse check passed, but the per-song markers are authoritative:
+            # if any track still misses a format (failed in a previous run),
+            # re-run the album — am_download_album only passes missing tracks.
+            track_urls = am_mod.fetch_album_tracks(album_url)
+            if track_urls:
+                done_map = am_mod._am_done_formats_for_urls(track_urls, album_id=album_id)
+                if all(len(done_map.get(u, set())) >= n_fmts for u in track_urls):
+                    logging.info("AM skip album %s (already completed)", album_id)
+                    continue
+                logging.info("AM album %s logs present but some tracks lack formats — resuming", album_id)
+            else:
+                logging.info("AM skip album %s (already completed)", album_id)
+                continue
         before = am_mod._am_files_snapshot()
 
         # 2) Download this album in ALL formats (album URL expands to its tracks).
@@ -601,16 +627,19 @@ async def Do_AM_Artist(am_url, is_zip, is_unzip, is_dualzip):
         completed_mv = am_mod.am_completed_artist_mv_batches()
         for mv_no, mv_batch in enumerate(mv_batches, start=1):
             if mv_no in completed_mv:
-                logging.info("AM skip artist MV batch %d (already completed)", mv_no)
-                continue
+                done = am_mod._am_mv_done_for_urls(mv_batch, artist=True)
+                if all(am_mod._am_url_adam_id(u) in done for u in mv_batch):
+                    logging.info("AM skip artist MV batch %d (already completed)", mv_no)
+                    continue
+                logging.info("AM artist MV batch %d logs present but some videos failed — resuming", mv_no)
             before = am_mod._am_files_snapshot()
-            mv_log = await am_mod.am_download_mvs(mv_batch, mv_no, mv_total)
+            mv_log = await am_mod.am_download_mvs(mv_batch, mv_no, mv_total, artist=True)
 
             try:
                 from colab_leecher.uploader.s3 import ensure_s3_client
                 from colab_leecher import S3_BUCKET_NAME
 
-                if S3_BUCKET_NAME:
+                if S3_BUCKET_NAME and mv_log:
                     key = am_mod._am_mv_log_key(mv_no, artist=True)
                     ensure_s3_client().upload_file(mv_log, S3_BUCKET_NAME, key)
                     logging.info("AM artist MV log mirrored to s3://%s/%s", S3_BUCKET_NAME, key)

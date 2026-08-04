@@ -770,10 +770,109 @@ def am_completed_artist_mv_batches() -> set:
     return done
 
 
+# --- per-song dedupe -------------------------------------------------------
+#
+# Beyond the batch/album-level logs above, every individual track gets its own
+# S3 marker the moment a pass finishes it. On a resume, a pass only re-runs the
+# tracks that are still missing THAT format, so a crash mid-batch never forces
+# the whole batch to be re-downloaded (or re-uploaded to Telegram).
+#
+# Keyspaces (all isolated from the batch/album logs above):
+#   playlist songs : music-logs/song-<format>-<adamID>.log
+#   album songs    : music-logs/album-<id>/song-<format>-<adamID>.log
+#   playlist MVs   : music-logs/mv-song-<adamID>.log
+#   artist MVs     : music-logs/artist-mv-song-<adamID>.log
+
+
+def _am_url_adam_id(url: str) -> str:
+    """Extract the store adamID from a /song/, /album/ or /music-video/ URL."""
+    m = re.search(r"/(?:song|album|music-video|playlist)/(?:[^/]+/)?(\d+)", url)
+    return m.group(1) if m else ""
+
+
+def _am_parse_pass_log_done(log_path: str, urls: list, mode: str = "queue") -> set:
+    """Read an am-downloader log and return the set of adamIDs that COMPLETED.
+
+    am-downloader splits its output into per-track segments:
+      - ``mode="queue"``: ``Queue N of M:`` — one segment per URL passed
+        (playlist songs + MVs, and album partial passes given song URLs)
+      - ``mode="track"``: ``Track N of M:`` — one segment per album track,
+        used when an album URL is expanded internally (the ``Queue 1 of 1:
+        Album`` header line is NOT a song segment)
+    A segment counts as done when it contains ``Decrypted`` (media written) or
+    ``no codec found`` (Apple simply doesn't offer that format for the track,
+    e.g. a legacy song in the Atmos pass — mark it done so it is never retried).
+    Anything else (``Failed to dl``, auth errors, network errors) is left for a
+    later run. ``urls`` must be the exact list am-downloader iterated for this
+    pass — its segment index is the mapping key.
+    """
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            text = f.read()
+    except OSError:
+        return set()
+    if mode == "track":
+        delim = r"^\s*Track \d+ of \d+:"
+    else:
+        delim = r"^\s*Queue \d+ of \d+:"
+    marks = [m.start() for m in re.finditer(delim, text, re.M)]
+    done = set()
+    for i, start in enumerate(marks):
+        end = marks[i + 1] if i + 1 < len(marks) else len(text)
+        seg = text[start:end]
+        if "Decrypted" in seg or "no codec found" in seg:
+            if i < len(urls):
+                done.add(_am_url_adam_id(urls[i]))
+    if len(marks) != len(urls):
+        logging.warning(
+            "AM per-song parse mismatch: log %s has %d segments for %d urls (mode=%s)",
+            ospath.basename(log_path), len(marks), len(urls), mode,
+        )
+    return done
+
+
+def _am_done_formats_for_urls(urls: list, album_id: str = "") -> dict:
+    """Return {url: set(fmt_names already marked done in S3)} for the given URLs."""
+    base = f"{S3_LOG_PREFIX}/album-{album_id}/song-" if album_id else f"{S3_LOG_PREFIX}/song-"
+    keys = set(_am_scan_s3(base))
+    pat = re.compile(
+        rf"^{re.escape(base)}(?P<fmt>[a-z0-9-]+)-(?P<adam>\d+)\.log$"
+    )
+    done_by_adam = {}
+    for k in keys:
+        m = pat.match(k)
+        if m:
+            done_by_adam.setdefault(m.group("adam"), set()).add(m.group("fmt"))
+    out = {}
+    for u in urls:
+        adam = _am_url_adam_id(u)
+        if not adam:
+            out.setdefault(u, set())
+            continue
+        out[u] = done_by_adam.get(adam, set())
+    return out
+
+
+def _am_mv_done_for_urls(urls: list, artist: bool = False) -> set:
+    """Set of adamIDs whose MV is already marked done in S3."""
+    prefix = "artist-mv" if artist else "mv"
+    keys = set(_am_scan_s3(f"{S3_LOG_PREFIX}/{prefix}-song-"))
+    pat = re.compile(rf"^{re.escape(S3_LOG_PREFIX)}/{prefix}-song-(\d+)\.log$")
+    done = set()
+    for k in keys:
+        m = pat.match(k)
+        if m:
+            done.add(m.group(1))
+    return done
+
+
 async def am_download(urls: list, batch_no: int = 0, batch_total: int = 1):
     """Download ONE batch of songs in ALL formats into /music.
 
-    Returns list of (format_name, log_path) for the S3 mirror step.
+    For every format, only the songs that are still missing that format's
+    per-song marker are passed to am-downloader — already-done tracks (from a
+    previous, possibly interrupted run) are skipped so nothing is re-downloaded
+    and re-uploaded. Returns list of (format_name, log_path) for the S3 mirror.
     """
     await _am_update_status(
         "<b>🎵 APPLE MUSIC » </b>\n⏳ __Preparing tools...__"
@@ -785,65 +884,68 @@ async def am_download(urls: list, batch_no: int = 0, batch_total: int = 1):
     os.chdir(AM_MUSIC_PATH)
 
     suffix = "" if batch_total <= 1 else f"-batch{batch_no:02d}"
+    done_map = _am_done_formats_for_urls(urls)
     results = []
     total = len(AM_FORMATS)
     for i, (name, extra_args, file_format) in enumerate(AM_FORMATS, start=1):
+        fmt = name.lower()
+        missing = [u for u in urls if fmt not in done_map.get(u, set())]
+        if not missing:
+            logging.info("AM skip %s pass for batch %d — all songs already done", name, batch_no)
+            continue
         if batch_total > 1:
-            head = f"<b>🎵 APPLE MUSIC » {name}</b>\n⏳ __Batch {batch_no}/{batch_total} — {len(urls)} songs in {name} format ({i}/{total})...__"
+            head = f"<b>🎵 APPLE MUSIC » {name}</b>\n⏳ __Batch {batch_no}/{batch_total} — {len(missing)} missing songs in {name} ({i}/{total})...__"
         else:
             head = (
                 f"<b>🎵 APPLE MUSIC » {name}</b>\n"
-                f"⏳ __Downloading in {name} format ({i}/{total})...__"
+                f"⏳ __Downloading {len(missing)} songs in {name} format ({i}/{total})...__"
             )
         await _am_update_status(head)
-        log_path = _run_am_pass(name, extra_args, urls, suffix, file_format)
+        log_path = _run_am_pass(name, extra_args, missing, suffix, file_format)
         results.append((name, log_path))
+        _am_mirror_song_markers(log_path, fmt, missing, "")
         await asleep(2)
 
     return results
 
 
-async def am_download_mvs(urls: list, batch_no: int = 0, batch_total: int = 1) -> str:
-    """Download ONE batch of music videos into /music.
+def _am_mirror_song_markers(log_path: str, fmt: str, urls: list, album_id: str, mode: str = "queue"):
+    """Parse a finished pass log and mirror per-song markers to S3 (best effort).
 
-    am-downloader picks the highest quality automatically from the config
-    (mv-max: 2160, mv-audio-type: atmos). Returns the log path for the S3
-    mirror step. The media-user-token and mp4decrypt are both required —
-    skip tracks the tool reports as unavailable, keep the ones it lands.
+    Marks every track that completed (downloaded, or permanently unavailable
+    such as legacy tracks in the Atmos pass) so a resume skips it for that
+    format. Tracks that FAILED are deliberately left unmarked → retried later.
     """
-    await _am_update_status(
-        "<b>🎵 APPLE MUSIC » </b>\n⏳ __Preparing tools...__"
-    )
-    await ensure_am_tools()
-    start_am_wrapper()
-    _write_am_config()
+    if not S3_BUCKET_NAME or not urls:
+        return
+    try:
+        from colab_leecher.uploader.s3 import ensure_s3_client
+        from colab_leecher import S3_BUCKET_NAME as _bucket
 
-    os.chdir(AM_MUSIC_PATH)
-
-    suffix = "" if batch_total <= 1 else f"-batch{batch_no:02d}"
-    if batch_total > 1:
-        head = (
-            f"<b>🎵 APPLE MUSIC » {AM_MV_FORMAT}</b>\n"
-            f"⏳ __Batch {batch_no}/{batch_total} — {len(urls)} music videos at "
-            f"max quality...__"
-        )
-    else:
-        head = (
-            f"<b>🎵 APPLE MUSIC » {AM_MV_FORMAT}</b>\n"
-            f"⏳ __Downloading {len(urls)} music videos at max quality...__"
-        )
-    await _am_update_status(head)
-    log_path = _run_am_pass(AM_MV_FORMAT, [], urls, suffix)
-    await asleep(2)
-    return log_path
+        done = _am_parse_pass_log_done(log_path, urls, mode=mode)
+        if not done:
+            return
+        client = ensure_s3_client()
+        for u in urls:
+            adam = _am_url_adam_id(u)
+            if adam in done:
+                if album_id:
+                    key = f"{S3_LOG_PREFIX}/album-{album_id}/song-{fmt}-{adam}.log"
+                else:
+                    key = f"{S3_LOG_PREFIX}/song-{fmt}-{adam}.log"
+                client.put_object(Bucket=_bucket, Key=key, Body=b"")
+        logging.info("AM mirrored %d per-song markers from %s", len(done), ospath.basename(log_path))
+    except Exception as e:
+        logging.error(f"AM per-song marker mirror failed: {e}")
 
 
 async def am_download_album(album_url: str, album_id: str, album_no: int = 1, album_total: int = 1):
     """Download ONE album in ALL formats into /music.
 
     am-downloader expands the album URL into its tracks itself, so a single
-    pass covers the whole album. Returns list of (format_name, log_path) for
-    the S3 mirror step, mirroring under ``music-logs/album-<id>/``.
+    pass covers the whole album. Only the album's songs still missing each
+    format are downloaded (via per-song markers) so a crash mid-album only
+    re-downloads the unfinished tracks. Returns list of (format_name, log_path).
     """
     await _am_update_status(
         "<b>🎵 APPLE MUSIC » </b>\n⏳ __Preparing tools...__"
@@ -854,18 +956,152 @@ async def am_download_album(album_url: str, album_id: str, album_no: int = 1, al
 
     os.chdir(AM_MUSIC_PATH)
 
+    # Resolve the album's track URLs (amp-api keeps authoritative order).
+    track_urls = fetch_album_tracks(album_url)
+    if not track_urls:
+        # Fall back to passing the album URL itself (am-downloader expands it).
+        track_urls = [album_url]
+
+    done_map = _am_done_formats_for_urls(track_urls, album_id=album_id)
     results = []
     total = len(AM_FORMATS)
     for i, (name, extra_args, file_format) in enumerate(AM_FORMATS, start=1):
+        fmt = name.lower()
+        missing = [u for u in track_urls if fmt not in done_map.get(u, set())]
+        if not missing:
+            logging.info("AM skip %s pass for album %s — all tracks already done", name, album_id)
+            continue
         head = (
             f"<b>🎵 APPLE MUSIC » {name}</b>\n"
             f"⏳ __Album {album_no}/{album_total} ({album_id}) — {name} format "
-            f"({i}/{total})...__"
+            f"({i}/{total}), {len(missing)} missing tracks...__"
         )
         await _am_update_status(head)
-        # Album pass: no -batchNN suffix; resume is per-album via S3 keys.
-        log_path = _run_am_pass(name, extra_args, [album_url], "", file_format)
+        # Pass the album URL once when every track is still missing (preserves
+        # am-downloader's artist/album folder layout); otherwise pass the
+        # individual missing track URLs.
+        if len(missing) == len(track_urls):
+            pass_urls = [album_url]
+        else:
+            pass_urls = missing
+        log_path = _run_am_pass(name, extra_args, pass_urls, "", file_format)
         results.append((name, log_path))
+        # Mirror markers using the url list + segment mode that match the log:
+        # a full pass expands the album URL into Track N of M segments aligned
+        # with track_urls; a partial pass logs Queue N of M aligned with
+        # pass_urls (== the missing track URLs).
+        if len(pass_urls) == 1:
+            mirror_urls, mode = track_urls, "track"
+        else:
+            mirror_urls, mode = pass_urls, "queue"
+        _am_mirror_song_markers(log_path, fmt, mirror_urls, album_id, mode=mode)
         await asleep(2)
 
     return results
+
+
+def fetch_album_tracks(album_url: str) -> list:
+    """Return per-track song URLs of an album, in track order.
+
+    Uses amp-api ``/catalog/<cc>/albums/<id>/tracks`` (authoritative order,
+    disc/track-number sorted); falls back to the public album page parser.
+    """
+    m = re.search(r"music\.apple\.com/(\w{2})/album/(?:[^/]+/)?(\d+)", album_url)
+    if not m:
+        return []
+    cc, album_id = m.group(1), m.group(2)
+    try:
+        token = _am_amp_token()
+        base = f"https://amp-api.music.apple.com/v1/catalog/{cc}/albums/{album_id}/tracks"
+        items = _am_api_paginate(base, token, "data")
+        # sort by (disc, track number) to mirror am-downloader's expansion order
+        def track_key(it):
+            a = it.get("attributes") or {}
+            return (int(a.get("discNumber") or 1), int(a.get("trackNumber") or 0))
+        items.sort(key=track_key)
+        urls = []
+        for it in items:
+            a = it.get("attributes") or {}
+            if a.get("url"):
+                urls.append(a["url"])
+        if urls:
+            return urls
+    except Exception as e:
+        logging.warning(f"AM album tracks via amp-api failed ({e}) — using page parser")
+    try:
+        songs, _ = _parse_playlist_page(album_url)
+        return songs
+    except Exception as e:
+        logging.warning(f"AM album tracks page parse failed ({e})")
+        return []
+
+
+async def am_download_mvs(
+    urls: list, batch_no: int = 0, batch_total: int = 1, artist: bool = False
+) -> str:
+    """Download ONE batch of music videos into /music.
+
+    am-downloader picks the highest quality automatically from the config
+    (mv-max: 2160, mv-audio-type: atmos). Returns the log path for the S3
+    mirror step. Only MVs still missing their per-song marker are passed to
+    am-downloader, so an interrupted MV batch resumes where it stopped.
+    """
+    await _am_update_status(
+        "<b>🎵 APPLE MUSIC » </b>\n⏳ __Preparing tools...__"
+    )
+    await ensure_am_tools()
+    start_am_wrapper()
+    _write_am_config()
+
+    os.chdir(AM_MUSIC_PATH)
+
+    done = _am_mv_done_for_urls(urls, artist=artist)
+    missing = [u for u in urls if _am_url_adam_id(u) not in done]
+    if not missing:
+        logging.info("AM skip MV batch %d — all videos already done", batch_no)
+        return ""
+
+    suffix = "" if batch_total <= 1 else f"-batch{batch_no:02d}"
+    if batch_total > 1:
+        head = (
+            f"<b>🎵 APPLE MUSIC » {AM_MV_FORMAT}</b>\n"
+            f"⏳ __Batch {batch_no}/{batch_total} — {len(missing)} missing music "
+            f"videos at max quality...__"
+        )
+    else:
+        head = (
+            f"<b>🎵 APPLE MUSIC » {AM_MV_FORMAT}</b>\n"
+            f"⏳ __Downloading {len(missing)} missing music videos at max quality...__"
+        )
+    await _am_update_status(head)
+    log_path = _run_am_pass(AM_MV_FORMAT, [], missing, suffix)
+    _am_mirror_mv_markers(log_path, missing, artist)
+    await asleep(2)
+    return log_path
+
+
+def _am_mirror_mv_markers(log_path: str, urls: list, artist: bool = False):
+    """Parse a finished MV pass log and mirror per-MV markers to S3 (best effort).
+
+    A video whose segment contains ``Decrypted`` is marked done; failed videos
+    stay unmarked so they are retried on the next run.
+    """
+    if not S3_BUCKET_NAME or not urls:
+        return
+    try:
+        from colab_leecher.uploader.s3 import ensure_s3_client
+        from colab_leecher import S3_BUCKET_NAME as _bucket
+
+        done = _am_parse_pass_log_done(log_path, urls)
+        if not done:
+            return
+        prefix = "artist-mv" if artist else "mv"
+        client = ensure_s3_client()
+        for u in urls:
+            adam = _am_url_adam_id(u)
+            if adam in done:
+                key = f"{S3_LOG_PREFIX}/{prefix}-song-{adam}.log"
+                client.put_object(Bucket=_bucket, Key=key, Body=b"")
+        logging.info("AM mirrored %d per-MV markers from %s", len(done), ospath.basename(log_path))
+    except Exception as e:
+        logging.error(f"AM per-MV marker mirror failed: {e}")
