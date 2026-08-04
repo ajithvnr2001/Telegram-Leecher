@@ -526,12 +526,20 @@ async def Do_AM_Songlist(is_zip, is_unzip, is_dualzip):
         raise RuntimeError(f"No songs found in {am_mod.AM_SONGLIST_PATH}")
     total_songs = len(song_urls)
     logging.info("AM songlist task: %d songs in %d album group(s)", total_songs, len(groups))
-    await MSG.status_msg.edit_text(
-        text=Messages.task_msg
+
+    async def _safe_edit(text):
+        """Status edits are cosmetic — a MessageNotModified/400 must NEVER
+        kill a multi-hour download/upload run."""
+        try:
+            await MSG.status_msg.edit_text(text=text, reply_markup=keyboard())
+        except Exception as e:
+            logging.warning(f"AM songlist status edit skipped: {e}")
+
+    await _safe_edit(
+        Messages.task_msg
         + f"<b>🎵 APPLE MUSIC » SONGLIST</b>\n📀 __{total_songs} songs from "
         f"{len(groups)} album group(s) — downloading in ALL formats "
         f"(resume: S3 dedupe log)...__",
-        reply_markup=keyboard(),
     )
 
     done_files = set()
@@ -541,12 +549,11 @@ async def Do_AM_Songlist(is_zip, is_unzip, is_dualzip):
         if local:
             logging.info("AM songlist %s chunk done — %d files saved locally", fmt, len(new_files))
             return
-        await MSG.status_msg.edit_text(
-            text=Messages.task_msg
+        await _safe_edit(
+            Messages.task_msg
             + f"<b>🎵 APPLE MUSIC » SONGLIST</b>\n"
             f"📤 __Uploading {len(new_files)} {fmt.upper()} files "
             f"({len(done_files)} so far)...__",
-            reply_markup=keyboard(),
         )
         Paths.down_path = am_mod.AM_MUSIC_PATH
         for f in new_files:
@@ -567,7 +574,7 @@ async def Do_AM_Songlist(is_zip, is_unzip, is_dualzip):
     )
     if local:
         done_msg += f"\n\n💾 <i>Saved locally under</i> <code>{am_mod.AM_MUSIC_PATH}</code>"
-    await MSG.status_msg.edit_text(text=done_msg, reply_markup=keyboard())
+    await _safe_edit(done_msg)
     # In local mode nothing was sent to Telegram, so there are no logs to mail.
     if not local:
         await SendLogs(True)
