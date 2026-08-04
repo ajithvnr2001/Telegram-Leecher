@@ -608,7 +608,7 @@ async def handle_image(client, message):
         await message.delete()
     else:
         await msg.edit_text(
-            "🥲 **Couldn't Set Thumbnail, Please Try Again !**", quote=True
+            "🥲 **Couldn't Set Thumbnail, Please Try Again !**"
         )
     await sleep(15)
     await message_deleter(message, msg)
