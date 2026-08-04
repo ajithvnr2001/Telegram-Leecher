@@ -303,6 +303,20 @@ async def taskScheduler():
     else:
         await Do_Leech(BOT.SOURCE, is_dir, BOT.Mode.ytdl, is_zip, is_unzip, is_dualzip)
 
+
+async def _am_leech_upload(new_files):
+    """Upload a set of AM files — ONE Leech() call per unique parent directory.
+
+    ``Leech(folder)`` uploads EVERY file under that folder, so calling it once
+    per file caused N×N duplicate uploads (a 25-file batch = 625 sends) and
+    flooded the Telegram account into FLOOD_WAIT_X. Pacing between files and
+    flood-aware retry live inside ``upload_one_file_throttled`` in handler.py.
+    """
+    from colab_leecher.utility.handler import Leech
+
+    for d in sorted({ospath.dirname(f) for f in new_files}):
+        await Leech(d, False)
+
 async def Do_AM_Music(am_url, is_zip, is_unzip, is_dualzip):
     """Download the predefined Apple Music playlist in batches of 5 songs.
 
@@ -390,8 +404,7 @@ async def Do_AM_Music(am_url, is_zip, is_unzip, is_dualzip):
                 reply_markup=keyboard(),
             )
             Paths.down_path = am_mod.AM_MUSIC_PATH
-            for f in new_files:
-                await Leech(ospath.dirname(f), False)
+            await _am_leech_upload(new_files)
             logging.info("Batch %d/%d done — %d files uploaded", batch_no, total_batches, len(new_files))
 
         # 4) AFTER upload: mirror each format's log + write per-song markers
@@ -456,8 +469,7 @@ async def Do_AM_Music(am_url, is_zip, is_unzip, is_dualzip):
                     reply_markup=keyboard(),
                 )
                 Paths.down_path = am_mod.AM_MUSIC_PATH
-                for f in new_files:
-                    await Leech(ospath.dirname(f), False)
+                await _am_leech_upload(new_files)
                 logging.info("MV batch %d/%d done — %d files uploaded", mv_no, mv_total, len(new_files))
 
             # AFTER upload: mirror the batch log + write per-MV markers.
@@ -556,8 +568,7 @@ async def Do_AM_Songlist(is_zip, is_unzip, is_dualzip):
             f"({len(done_files)} so far)...__",
         )
         Paths.down_path = am_mod.AM_MUSIC_PATH
-        for f in new_files:
-            await Leech(ospath.dirname(f), False)
+        await _am_leech_upload(new_files)
 
     await am_mod.am_download_songlist(song_urls, on_new_files=_upload_chunk)
 
@@ -678,8 +689,7 @@ async def Do_AM_Artist(am_url, is_zip, is_unzip, is_dualzip):
                 reply_markup=keyboard(),
             )
             Paths.down_path = am_mod.AM_MUSIC_PATH
-            for f in new_files:
-                await Leech(ospath.dirname(f), False)
+            await _am_leech_upload(new_files)
             logging.info("Album %d/%d done — %d files uploaded", album_no, total_albums, len(new_files))
 
         # 4) AFTER upload: mirror each format's log + write per-song markers.
@@ -740,8 +750,7 @@ async def Do_AM_Artist(am_url, is_zip, is_unzip, is_dualzip):
                     reply_markup=keyboard(),
                 )
                 Paths.down_path = am_mod.AM_MUSIC_PATH
-                for f in new_files:
-                    await Leech(ospath.dirname(f), False)
+                await _am_leech_upload(new_files)
                 logging.info("Artist MV batch %d/%d done — %d files uploaded", mv_no, mv_total, len(new_files))
 
             # AFTER upload: mirror the batch log + write per-MV markers.
