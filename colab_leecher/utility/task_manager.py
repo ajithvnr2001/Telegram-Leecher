@@ -125,23 +125,28 @@ async def taskScheduler():
         Transfer.total_down_size = getSize(BOT.SOURCE[0])
         Messages.download_name = ospath.basename(BOT.SOURCE[0])
     elif BOT.Mode.mode == "am-music":
-        from colab_leecher import AM_PLAYLIST_URL
+        from colab_leecher import AM_PLAYLIST_URL, AM_ARTIST_URL
 
-        if not AM_PLAYLIST_URL:
+        if not AM_PLAYLIST_URL and not AM_ARTIST_URL:
             TaskError.state = True
-            TaskError.text = "Task Failed. Because: AM_PLAYLIST_URL is not set"
+            TaskError.text = "Task Failed. Because: AM_PLAYLIST_URL and AM_ARTIST_URL are both unset"
             logging.error(TaskError.text)
             return
+        am_src = "\n".join(
+            f"🎵 <code>{u}</code>"
+            for u in (AM_PLAYLIST_URL, AM_ARTIST_URL)
+            if u
+        )
         Messages.dump_task += (
-            f"\n\n🎵 <code>{AM_PLAYLIST_URL}</code>\n\n"
+            f"\n\n{am_src}\n\n"
             "💾 <i>LOCAL SAVE — files stay on the Colab disk, nothing is "
             "uploaded to Telegram.</i>"
             if BOT.Mode.am_local
-            else f"\n\n🎵 <code>{AM_PLAYLIST_URL}</code>\n\n"
+            else f"\n\n{am_src}\n\n"
             "📀 <i>All formats (ALAC / Atmos / AAC-LC 256 / AAC 128 / HE-AAC 64) "
             "will be downloaded to /music and uploaded to Telegram.</i>"
         )
-        BOT.SOURCE = [AM_PLAYLIST_URL]
+        BOT.SOURCE = [u for u in (AM_PLAYLIST_URL, AM_ARTIST_URL) if u]
     else:
         for link in BOT.SOURCE:
             if is_telegram(link):
@@ -255,10 +260,10 @@ async def taskScheduler():
         else:
             Messages.download_name = ospath.basename(BOT.SOURCE[0])
     else:
-        from colab_leecher import AM_PLAYLIST_URL
+        from colab_leecher import AM_PLAYLIST_URL, AM_ARTIST_URL
 
         Messages.download_name = "Apple Music Playlist"
-        _ = AM_PLAYLIST_URL
+        _ = (AM_PLAYLIST_URL, AM_ARTIST_URL)
 
     if is_zip:
         Paths.down_path = ospath.join(Paths.down_path, Messages.download_name)
@@ -272,16 +277,31 @@ async def taskScheduler():
     elif BOT.Mode.mode == "s3-mirror":
         await Do_S3_Mirror(BOT.SOURCE, BOT.Mode.ytdl, is_zip, is_unzip, is_dualzip)
     elif BOT.Mode.mode == "am-music":
+        from colab_leecher import AM_PLAYLIST_URL, AM_ARTIST_URL
         from colab_leecher.downlader import apple_music as am_mod
 
-        if am_mod.is_am_artist(AM_PLAYLIST_URL):
-            await Do_AM_Artist(is_zip, is_unzip, is_dualzip)
-        else:
-            await Do_AM_Music(is_zip, is_unzip, is_dualzip)
+        # Both sources may be configured at once; each runs as its own pass and
+        # keeps a separate S3 log keyspace, so resumes never cross-contaminate.
+        playlist_url = AM_PLAYLIST_URL if am_mod.is_am_playlist(AM_PLAYLIST_URL) else ""
+        artist_url = AM_ARTIST_URL if am_mod.is_am_artist(AM_ARTIST_URL) else (
+            # Back-compat: an artist link left in AM_PLAYLIST_URL still routes
+            # to artist mode when no dedicated AM_ARTIST_URL is set.
+            AM_PLAYLIST_URL if am_mod.is_am_artist(AM_PLAYLIST_URL) else ""
+        )
+
+        if not playlist_url and not artist_url:
+            TaskError.state = True
+            TaskError.text = "Task Failed. Because: AM_PLAYLIST_URL and AM_ARTIST_URL are both unset"
+            logging.error(TaskError.text)
+            return
+        if playlist_url:
+            await Do_AM_Music(playlist_url, is_zip, is_unzip, is_dualzip)
+        if artist_url:
+            await Do_AM_Artist(artist_url, is_zip, is_unzip, is_dualzip)
     else:
         await Do_Leech(BOT.SOURCE, is_dir, BOT.Mode.ytdl, is_zip, is_unzip, is_dualzip)
 
-async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
+async def Do_AM_Music(am_url, is_zip, is_unzip, is_dualzip):
     """Download the predefined Apple Music playlist in batches of 5 songs.
 
     For every batch: download all 5 formats into /music, upload the new
@@ -289,7 +309,6 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
     next batch until the whole playlist is done. Music videos (if any)
     are downloaded afterwards, in their own batches, at max quality.
     """
-    from colab_leecher import AM_PLAYLIST_URL
     from colab_leecher.downlader import apple_music as am_mod
     from colab_leecher.utility.handler import Leech
 
@@ -306,7 +325,7 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
         + "<b>🎵 APPLE MUSIC » </b>\n⏳ __Reading playlist...__",
         reply_markup=keyboard(),
     )
-    songs = am_mod.fetch_playlist_songs(AM_PLAYLIST_URL)
+    songs = am_mod.fetch_playlist_songs(am_url)
     total_songs = len(songs)
     batch_size = 5
     batches = [
@@ -385,7 +404,7 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
     # 5) Music videos — download at max quality in their own batches, resume
     #    off the mv-batchNN.log mirrors in S3.
     try:
-        mvs = am_mod.fetch_playlist_mvs(AM_PLAYLIST_URL)
+        mvs = am_mod.fetch_playlist_mvs(am_url)
     except Exception as e:
         logging.warning(f"AM MV list failed ({e}) — skipping MV pass")
         mvs = []
@@ -406,7 +425,7 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
                 from colab_leecher import S3_BUCKET_NAME
 
                 if S3_BUCKET_NAME:
-                    key = am_mod._am_log_key(am_mod.AM_MV_FORMAT, suffix=f"-batch{mv_no:02d}")
+                    key = am_mod._am_mv_log_key(mv_no, artist=False)
                     ensure_s3_client().upload_file(mv_log, S3_BUCKET_NAME, key)
                     logging.info("AM MV log mirrored to s3://%s/%s", S3_BUCKET_NAME, key)
             except Exception as e:
@@ -462,7 +481,7 @@ async def Do_AM_Music(is_zip, is_unzip, is_dualzip):
     BOT.Mode.am_local = False
 
 
-async def Do_AM_Artist(is_zip, is_unzip, is_dualzip):
+async def Do_AM_Artist(am_url, is_zip, is_unzip, is_dualzip):
     """Download every album of an Apple Music artist, one album per batch.
 
     Resolves the artist's full album list via amp-api (oldest release first),
@@ -474,7 +493,6 @@ async def Do_AM_Artist(is_zip, is_unzip, is_dualzip):
     The number of albums processed can be capped with ``AM_ALBUM_LIMIT`` and
     the music-video batch count with ``AM_MV_LIMIT`` (both 0 = everything).
     """
-    from colab_leecher import AM_PLAYLIST_URL
     from colab_leecher.downlader import apple_music as am_mod
     from colab_leecher.utility.handler import Leech
 
@@ -495,7 +513,7 @@ async def Do_AM_Artist(is_zip, is_unzip, is_dualzip):
         + "<b>🎵 APPLE MUSIC » </b>\n⏳ __Resolving artist albums...__",
         reply_markup=keyboard(),
     )
-    albums = am_mod.fetch_artist_albums(AM_PLAYLIST_URL, limit=AM_ALBUM_LIMIT)
+    albums = am_mod.fetch_artist_albums(am_url, limit=AM_ALBUM_LIMIT)
     total_albums = len(albums)
     logging.info("AM artist: %d albums to process", total_albums)
 
@@ -572,7 +590,7 @@ async def Do_AM_Artist(is_zip, is_unzip, is_dualzip):
     # 5) Artist music videos — download at max quality in batches of 5, resume
     #    off the artist-mv-batchNN.log mirrors in S3.
     try:
-        mvs = am_mod.fetch_artist_mvs(AM_PLAYLIST_URL, limit=AM_MV_LIMIT)
+        mvs = am_mod.fetch_artist_mvs(am_url, limit=AM_MV_LIMIT)
     except Exception as e:
         logging.warning(f"AM artist MV list failed ({e}) — skipping MV pass")
         mvs = []
@@ -593,7 +611,7 @@ async def Do_AM_Artist(is_zip, is_unzip, is_dualzip):
                 from colab_leecher import S3_BUCKET_NAME
 
                 if S3_BUCKET_NAME:
-                    key = f"{am_mod.S3_LOG_PREFIX}/artist-mv-batch{mv_no:02d}.log"
+                    key = am_mod._am_mv_log_key(mv_no, artist=True)
                     ensure_s3_client().upload_file(mv_log, S3_BUCKET_NAME, key)
                     logging.info("AM artist MV log mirrored to s3://%s/%s", S3_BUCKET_NAME, key)
             except Exception as e:

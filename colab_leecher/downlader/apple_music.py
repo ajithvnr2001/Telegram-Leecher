@@ -648,6 +648,17 @@ def _am_log_key(name: str, suffix: str = "") -> str:
     return f"{S3_LOG_PREFIX}/{name.lower()}{suffix}.log"
 
 
+def _am_mv_log_key(batch_no: int, artist: bool = False) -> str:
+    """S3 object key for a music-video batch log.
+
+    Playlist MVs use ``music-logs/mv-batchNN.log`` and artist-wide MVs use
+    ``music-logs/artist-mv-batchNN.log`` — two distinct keyspaces so resuming
+    one source never reads the other's MV logs.
+    """
+    prefix = "artist-mv" if artist else "mv"
+    return f"{S3_LOG_PREFIX}/{prefix}-batch{batch_no:02d}.log"
+
+
 def _am_album_log_key(album_id: str, name: str, suffix: str = "") -> str:
     """S3 object key for one album: ``music-logs/album-<id>/<format>[<suffix>].log``."""
     return f"{S3_LOG_PREFIX}/album-{album_id}/{name.lower()}{suffix}.log"
@@ -683,12 +694,18 @@ def am_completed_batches() -> set:
     completed and the log made its way to S3. Re-running /amusic then
     skips those batches instead of restarting from scratch.
     """
+    required = {name.lower() for name, _, _ in AM_FORMATS}
+    fmt_alt = "|".join(sorted(required))
     batch_to_formats = {}
     for key in _am_scan_s3(f"{S3_LOG_PREFIX}/"):
-        # Only top-level music-logs/<format>[-batchNN].log entries count;
-        # album-scoped keys (music-logs/album-<id>/...) are tracked separately.
+        # Strictly playlist song keys only: music-logs/<format>[-batchNN].log
+        # where <format> is one of the AM_FORMATS. This deliberately excludes
+        # playlist MV keys (music-logs/mv-batchNN.log), artist-MV keys
+        # (music-logs/artist-mv-batchNN.log) and album-scoped keys
+        # (music-logs/album-<id>/...) so resuming a playlist never reads logs
+        # that belong to the artist mode (and vice versa).
         m = re.match(
-            rf"^{re.escape(S3_LOG_PREFIX)}/([^/]+?)(?:-batch(\d+))?\.log$",
+            rf"^{re.escape(S3_LOG_PREFIX)}/({fmt_alt})(?:-batch(\d+))?\.log$",
             key,
         )
         if not m:
@@ -697,7 +714,6 @@ def am_completed_batches() -> set:
         batch = int(m.group(2)) if m.group(2) else 0
         batch_to_formats.setdefault(batch, set()).add(fmt)
 
-    required = {name.lower() for name, _, _ in AM_FORMATS}
     return {batch for batch, fmts in batch_to_formats.items() if required.issubset(fmts)}
 
 

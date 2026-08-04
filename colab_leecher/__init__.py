@@ -22,7 +22,12 @@ S3_ENDPOINT_URL = credentials.get("S3_ENDPOINT_URL", "") or ""
 S3_REGION = credentials.get("S3_REGION", "") or "us-east-1"
 
 # Apple Music config (optional — used by /amusic)
+# AM_PLAYLIST_URL — playlist link → batch download (5-song batches, MVs after).
+# AM_ARTIST_URL — artist link → all-album download (one album per batch, MVs after).
+# Both may be set at the same time; each source is processed independently and
+# keeps its OWN S3 log keyspace, so resuming one never reads the other's logs.
 AM_PLAYLIST_URL = credentials.get("AM_PLAYLIST_URL", "") or ""
+AM_ARTIST_URL = credentials.get("AM_ARTIST_URL", "") or ""
 AM_MEDIA_TOKEN = credentials.get("AM_MEDIA_TOKEN", "") or ""
 # Optional pinned Authorization JWT for am-downloader. When set, am-downloader
 # prefers it over its own GetToken() scrape (which can return an empty JWT from
