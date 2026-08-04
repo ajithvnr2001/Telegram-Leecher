@@ -114,6 +114,14 @@ AM_CONFIG_PATH = ospath.join(AM_MUSIC_PATH, "config.yaml")
 AM_WRAPPER_CMD = "./wrapper -H 0.0.0.0 -B rootfs/data/data/com.apple.android.music/files"
 AM_WRAPPER_ENV = {"AM_BIND_PROC": "1", "AM_NO_PIDNS": "1"}
 
+# Songlist mode (/amusic songs): an arbitrary song list file, e.g. generated
+# from /root/links.txt, is downloaded in ALL formats. Resume state for it is
+# ONE single file (appended line per completed track×format) mirrored to S3,
+# NOT the per-batch batchNN logs of playlist mode.
+AM_SONGLIST_PATH = "/content/songlist.txt"
+AM_SONGLIST_DEDUPE_KEY = f"{S3_LOG_PREFIX}/songlist-dedupe.log"
+AM_SONGLIST_CHUNK = 25  # songs per am-downloader subprocess (bounds runtime)
+
 
 def is_am_playlist(url: str) -> bool:
     """True for https://music.apple.com/<cc>/playlist/<name>/<id> links."""
@@ -601,10 +609,12 @@ proxy: ""
     logging.info("AM config written to %s", AM_CONFIG_PATH)
 
 
-def _run_am_pass(name: str, extra_args: list, urls: list, suffix: str = "", file_format: str = "") -> str:
+def _run_am_pass(name: str, extra_args: list, urls: list, suffix: str = "", file_format: str = "", append: bool = False) -> str:
     """Run one am-downloader pass over a list of song URLs.
 
-    Returns path to its log file.
+    Returns path to its log file. With ``append=True`` the pass APPENDS to the
+    same log file instead of truncating it (songlist mode keeps one log per
+    format across all its chunks).
     """
     makedirs(AM_LOG_DIR, exist_ok=True)
     log_name = f"{name.lower()}{suffix}.log"
@@ -613,7 +623,7 @@ def _run_am_pass(name: str, extra_args: list, urls: list, suffix: str = "", file
     if file_format:
         cmd += ["--song-file-format", file_format]
     cmd += urls
-    with open(log_path, "w") as logf:
+    with open(log_path, "a" if append else "w") as logf:
         proc = subprocess.run(
             cmd,
             cwd=AM_MUSIC_PATH,
@@ -631,11 +641,18 @@ def _run_am_pass(name: str, extra_args: list, urls: list, suffix: str = "", file
 
 
 def _am_files_snapshot() -> set:
-    """Absolute paths of every file currently under /music."""
+    """Absolute paths of every file currently under /music.
+
+    Pass logs live under AM_LOG_DIR (inside AM_MUSIC_PATH) — they are internal
+    state, NOT media, and must never be picked up by the upload diff.
+    """
     out = set()
     for root, _dirs, files in os.walk(AM_MUSIC_PATH):
         for f in files:
-            out.add(ospath.join(root, f))
+            p = ospath.join(root, f)
+            if p.startswith(AM_LOG_DIR):
+                continue
+            out.add(p)
     return out
 
 
@@ -790,7 +807,7 @@ def _am_url_adam_id(url: str) -> str:
     return m.group(1) if m else ""
 
 
-def _am_parse_pass_log_done(log_path: str, urls: list, mode: str = "queue") -> set:
+def _am_parse_pass_log_done(log_path: str, urls: list, mode: str = "queue", offset: int = 0) -> set:
     """Read an am-downloader log and return the set of adamIDs that COMPLETED.
 
     am-downloader splits its output into per-track segments:
@@ -804,10 +821,12 @@ def _am_parse_pass_log_done(log_path: str, urls: list, mode: str = "queue") -> s
     e.g. a legacy song in the Atmos pass — mark it done so it is never retried).
     Anything else (``Failed to dl``, auth errors, network errors) is left for a
     later run. ``urls`` must be the exact list am-downloader iterated for this
-    pass — its segment index is the mapping key.
+    pass — its segment index is the mapping key. ``offset`` lets songlist mode
+    parse only the tail of an APPENDED multi-chunk log.
     """
     try:
         with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            f.seek(offset)
             text = f.read()
     except OSError:
         return set()
@@ -1034,6 +1053,209 @@ def fetch_album_tracks(album_url: str) -> list:
     except Exception as e:
         logging.warning(f"AM album tracks page parse failed ({e})")
         return []
+
+
+# --- songlist mode (/amusic songs) ------------------------------------------
+#
+# A songlist file (e.g. /content/songlist.txt, generated from /root/links.txt)
+# is a freeform list of songs, optionally grouped under album headers. This
+# mode downloads the WHOLE list in every format, chunked into small
+# am-downloader subprocess runs, and tracks progress in ONE single log file
+# (music-logs/songlist-dedupe.log) — every completed track×format is appended
+# as a line so a crash/resume never re-downloads done songs.
+
+
+def fetch_songlist(path: str = AM_SONGLIST_PATH):
+    """Parse a songlist file into ordered, globally-deduplicated song URLs.
+
+    Format (as produced by the links.txt extractor):
+
+        # comment line (ignored)
+        Album Name (Year):          <- header line (ends in ':', display only)
+          https://music.apple.com/in/song/<adamID>
+          <adamID>                  <- bare adamID is also accepted
+
+    Returns ``(song_urls, groups)`` where groups is ``[(header, count), ...]``
+    for status display. Duplicate songs (same track on multiple albums) are
+    kept only once, in first-seen order.
+    """
+    urls = []
+    groups = []  # [(header, count)]
+    current = None
+    seen = set()
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.endswith(":") and "/" not in line:
+                current = [line[:-1].strip(), 0]
+                groups.append(current)
+                continue
+            if line.isdigit():
+                line = f"https://music.apple.com/in/song/{line}"
+            if "music.apple.com" not in line:
+                logging.warning(f"AM songlist: skipping unrecognized line: {line!r}")
+                continue
+            adam = _am_url_adam_id(line)
+            if not adam or adam in seen:
+                continue
+            seen.add(adam)
+            urls.append(line)
+            if current is not None:
+                current[1] += 1
+    logging.info(
+        "AM songlist: %d unique songs in %d album group(s) from %s",
+        len(urls), len(groups), path,
+    )
+    return urls, groups
+
+
+def _am_songlist_dedupe_path() -> str:
+    return ospath.join(AM_LOG_DIR, "songlist-dedupe.log")
+
+
+def _am_songlist_dedupe_load() -> set:
+    """Load the dedupe set {(format, adamID)} for songlist mode.
+
+    Sources the S3-mirrored log (remote state survives a Colab restart) and
+    merges it with any local copy, then rewrites the local file deduplicated,
+    so future appends stay minimal.
+    """
+    makedirs(AM_LOG_DIR, exist_ok=True)
+    merged = ""
+    if S3_BUCKET_NAME:
+        try:
+            from colab_leecher.uploader.s3 import ensure_s3_client
+
+            body = (
+                ensure_s3_client()
+                .get_object(Bucket=S3_BUCKET_NAME, Key=AM_SONGLIST_DEDUPE_KEY)["Body"]
+                .read()
+            )
+            merged += body.decode("utf-8", "ignore")
+        except Exception as e:
+            logging.info(f"AM songlist dedupe: no previous S3 log ({e})")
+    local_path = _am_songlist_dedupe_path()
+    if ospath.exists(local_path):
+        with open(local_path, "r", encoding="utf-8", errors="ignore") as f:
+            merged += "\n" + f.read()
+
+    done = set()
+    with open(local_path, "w") as f:
+        for line in merged.splitlines():
+            m = re.match(r"^DONE ([a-z0-9-]+) (\d+)$", line.strip())
+            if m:
+                done.add((m.group(1), m.group(2)))
+        for fmt, adam in sorted(done):
+            f.write(f"DONE {fmt} {adam}\n")
+    logging.info("AM songlist dedupe: %d track×format completions loaded", len(done))
+    return done
+
+
+def _am_songlist_dedupe_append(done_pairs):
+    """Append DONE <fmt> <adamID> lines and mirror the whole log back to S3."""
+    if not done_pairs:
+        return
+    makedirs(AM_LOG_DIR, exist_ok=True)
+    local_path = _am_songlist_dedupe_path()
+    with open(local_path, "a") as f:
+        for fmt, adam in sorted(done_pairs):
+            f.write(f"DONE {fmt} {adam}\n")
+    if S3_BUCKET_NAME:
+        try:
+            from colab_leecher.uploader.s3 import ensure_s3_client
+            from colab_leecher import S3_BUCKET_NAME as _bucket
+
+            with open(local_path, "rb") as f:
+                ensure_s3_client().put_object(
+                    Bucket=_bucket, Key=AM_SONGLIST_DEDUPE_KEY, Body=f.read()
+                )
+        except Exception as e:
+            logging.error(f"AM songlist dedupe mirror failed: {e}")
+
+
+def _am_songlist_log_key(fmt: str) -> str:
+    """S3 key of the appended am-downloader log for one songlist format pass."""
+    return f"{S3_LOG_PREFIX}/songlist/{fmt}.log"
+
+
+async def am_download_songlist(song_urls: list, on_new_files=None):
+    """Download an arbitrary song list in ALL formats, chunk by chunk.
+
+    Resume state lives in a SINGLE appended dedupe log mirroring
+    ``music-logs/songlist-dedupe.log`` in S3: every completed track×format is
+    a ``DONE <format> <adamID>`` line, so a crash/resume (even a fresh Colab
+    runtime) only re-downloads what's still missing. The am-downloader output
+    of every chunk of the same format is appended into ONE format log
+    (`` songlist/<fmt>-songlist.log ``). ``on_new_files(fmt, new_files)`` is
+    awaited after every chunk (task manager uses it to upload/report).
+    """
+    await _am_update_status(
+        "<b>🎵 APPLE MUSIC » </b>\n⏳ __Preparing tools...__"
+    )
+    await ensure_am_tools()
+    start_am_wrapper()
+    _write_am_config()
+
+    os.chdir(AM_MUSIC_PATH)
+
+    done = _am_songlist_dedupe_load()
+    results = []  # [(format_name, appended_log_path)] — one entry per format
+    total_fmt = len(AM_FORMATS)
+    for i, (name, extra_args, file_format) in enumerate(AM_FORMATS, start=1):
+        fmt = name.lower()
+        missing = [u for u in song_urls if (fmt, _am_url_adam_id(u)) not in done]
+        if not missing:
+            logging.info("AM songlist skip %s — all songs already done", name)
+            continue
+        chunks = [missing[k : k + AM_SONGLIST_CHUNK] for k in range(0, len(missing), AM_SONGLIST_CHUNK)]
+        log_path = ospath.join(AM_LOG_DIR, f"{fmt}-songlist.log")
+        for ci, chunk in enumerate(chunks, start=1):
+            head = (
+                f"<b>🎵 APPLE MUSIC » SONGLIST {name}</b>\n"
+                f"⏳ __Chunk {ci}/{len(chunks)} — {len(chunk)} of {len(missing)} "
+                f"missing songs in {name} (format {i}/{total_fmt})...__"
+            )
+            await _am_update_status(head)
+            # Capture the appended-file offset BEFORE this chunk runs, so the
+            # log parser only inspects THIS chunk's segments. The per-format
+            # log is ALWAYS appended (also across Colab restarts) so it stays
+            # one single cumulative file, per the songlist design.
+            offset = os.path.getsize(log_path) if ospath.exists(log_path) else 0
+            before = _am_files_snapshot()
+            _run_am_pass(
+                name, extra_args, chunk, file_format=file_format,
+                suffix="-songlist", append=True,
+            )
+            if ci == 1:
+                results.append((name, log_path))
+            chunk_done = _am_parse_pass_log_done(log_path, chunk, mode="queue", offset=offset)
+            newly = {(fmt, a) for a in chunk_done if (fmt, a) not in done}
+            done |= newly
+            _am_songlist_dedupe_append(newly)
+            # Mirror the appended per-format log too (best effort), so even a
+            # crash leaves the full traceback of what was attempted.
+            _am_songlist_mirror_log(fmt, log_path)
+            if on_new_files is not None:
+                new_files = sorted(_am_files_snapshot() - before)
+                if new_files:
+                    await on_new_files(fmt, new_files)
+            await asleep(1)
+    return results
+
+
+def _am_songlist_mirror_log(fmt: str, log_path: str):
+    """Best-effort upload of the appended songlist-<fmt>.log to S3."""
+    if not S3_BUCKET_NAME:
+        return
+    try:
+        from colab_leecher.uploader.s3 import ensure_s3_client
+        from colab_leecher import S3_BUCKET_NAME as _bucket
+
+        ensure_s3_client().upload_file(log_path, _bucket, _am_songlist_log_key(fmt))
+    except Exception as e:
+        logging.error(f"AM songlist log mirror failed: {e}")
 
 
 async def am_download_mvs(

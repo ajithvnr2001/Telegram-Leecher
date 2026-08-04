@@ -298,6 +298,8 @@ async def taskScheduler():
             await Do_AM_Music(playlist_url, is_zip, is_unzip, is_dualzip)
         if artist_url:
             await Do_AM_Artist(artist_url, is_zip, is_unzip, is_dualzip)
+    elif BOT.Mode.mode == "am-songlist":
+        await Do_AM_Songlist(is_zip, is_unzip, is_dualzip)
     else:
         await Do_Leech(BOT.SOURCE, is_dir, BOT.Mode.ytdl, is_zip, is_unzip, is_dualzip)
 
@@ -489,6 +491,83 @@ async def Do_AM_Music(am_url, is_zip, is_unzip, is_dualzip):
         text=done_msg,
         reply_markup=keyboard(),
     )
+    # In local mode nothing was sent to Telegram, so there are no logs to mail.
+    if not local:
+        await SendLogs(True)
+    BOT.Mode.am_local = False
+
+
+async def Do_AM_Songlist(is_zip, is_unzip, is_dualzip):
+    """Download an arbitrary song list (``/content/songlist.txt``) in ALL formats.
+
+    Resume is single-file based: the appended log ``music-logs/songlist-dedupe.log``
+    (one ``DONE <format> <adamID>`` line per completed track) survives a Colab
+    restart via its S3 mirror, so re-running only downloads what's still missing.
+    Downloads run in small chunks; uploads happen incrementally through the
+    ``am_download_songlist`` on_new_files hook.
+    """
+    from colab_leecher.downlader import apple_music as am_mod
+    from colab_leecher.utility.handler import Leech
+
+    Messages.download_name = "Apple Music Songlist"
+    local = bool(BOT.Mode.am_local)
+    if local:
+        # /amusic songs local → download to Colab disk, no Telegram upload
+        am_mod.set_am_music_path(am_mod.AM_LOCAL_MUSIC_PATH)
+
+    # 1) Parse the song list
+    await MSG.status_msg.edit_text(
+        text=Messages.task_msg
+        + "<b>🎵 APPLE MUSIC » </b>\n⏳ __Reading songlist...__",
+        reply_markup=keyboard(),
+    )
+    song_urls, groups = am_mod.fetch_songlist(am_mod.AM_SONGLIST_PATH)
+    if not song_urls:
+        raise RuntimeError(f"No songs found in {am_mod.AM_SONGLIST_PATH}")
+    total_songs = len(song_urls)
+    logging.info("AM songlist task: %d songs in %d album group(s)", total_songs, len(groups))
+    await MSG.status_msg.edit_text(
+        text=Messages.task_msg
+        + f"<b>🎵 APPLE MUSIC » SONGLIST</b>\n📀 __{total_songs} songs from "
+        f"{len(groups)} album group(s) — downloading in ALL formats "
+        f"(resume: S3 dedupe log)...__",
+        reply_markup=keyboard(),
+    )
+
+    done_files = set()
+
+    async def _upload_chunk(fmt, new_files):
+        done_files.update(new_files)
+        if local:
+            logging.info("AM songlist %s chunk done — %d files saved locally", fmt, len(new_files))
+            return
+        await MSG.status_msg.edit_text(
+            text=Messages.task_msg
+            + f"<b>🎵 APPLE MUSIC » SONGLIST</b>\n"
+            f"📤 __Uploading {len(new_files)} {fmt.upper()} files "
+            f"({len(done_files)} so far)...__",
+            reply_markup=keyboard(),
+        )
+        Paths.down_path = am_mod.AM_MUSIC_PATH
+        for f in new_files:
+            await Leech(ospath.dirname(f), False)
+
+    await am_mod.am_download_songlist(song_urls, on_new_files=_upload_chunk)
+
+    if local:
+        Transfer.total_down_size = sum(
+            (ospath.getsize(f) for f in done_files if ospath.exists(f)), 0
+        )
+    else:
+        Transfer.total_down_size = getSize(am_mod.AM_MUSIC_PATH)
+
+    done_msg = (
+        Messages.task_msg
+        + f"<b>🎵 APPLE MUSIC » </b>\n✅ __Songlist finished — {len(done_files)} files handled.__"
+    )
+    if local:
+        done_msg += f"\n\n💾 <i>Saved locally under</i> <code>{am_mod.AM_MUSIC_PATH}</code>"
+    await MSG.status_msg.edit_text(text=done_msg, reply_markup=keyboard())
     # In local mode nothing was sent to Telegram, so there are no logs to mail.
     if not local:
         await SendLogs(True)

@@ -79,6 +79,7 @@ two-layered:
 | Playlist MVs | `music-logs/mv-batchNN.log` + `music-logs/mv-song-<adamID>.log` | both |
 | Artist albums | `music-logs/album-<id>/…` + `music-logs/album-<id>/song-<format>-<adamID>.log` | both |
 | Artist MVs | `music-logs/artist-mv-batchNN.log` + `music-logs/artist-mv-song-<adamID>.log` | both |
+| **Songlist** | `music-logs/songlist-dedupe.log` (single appended `DONE <format> <adamID>` lines) | `music-logs/songlist-dedupe.log` + `music-logs/songlist/<format>.log` |
 
 A per-song marker is written when a track's segment in the pass log shows
 `Decrypted` (media written) **or** `no codec found` (Apple doesn't offer that
@@ -95,6 +96,31 @@ playlist resume in a mixed bucket never picks up `album-*`, `mv-batch*` or
 via `set_am_music_path()` (in `apple_music.py`) and skips the `Leech` upload
 step — the resume logic, log mirroring and naming all work the same, the files
 just stay on the Colab disk.
+
+**Songlist mode** (`/amusic songs`, `Do_AM_Songlist`):
+
+1. Reads an arbitrary song list from **`/content/songlist.txt`** — album
+   headers (line ending in `:`) plus one Apple Music song URL (or bare adamID)
+   per line; `#` comments and blanks are ignored, duplicates deduped
+   globally (`fetch_songlist` in `apple_music.py`).
+2. Downloads the **whole list in ALL five formats**, chunked into
+   `AM_SONGLIST_CHUNK`-sized (25) am-downloader subprocess runs.
+3. Resume state is **one single appended file**: every completed track×format
+   appends a `DONE <format> <adamID>` line to
+   `am-logs/songlist-dedupe.log`, which is continuously mirrored to
+   `s3://<bucket>/music-logs/songlist-dedupe.log`. On startup the S3 copy is
+   merged with the local one, so a Colab restart — even a fresh runtime —
+   skips everything already done ("resume based on S3 log").
+4. The am-downloader output of every chunk of the same format is appended
+   into ONE cumulative log (`am-logs/<format>-songlist.log`, mirrored to
+   `music-logs/songlist/<format>.log`).
+5. New files are uploaded to Telegram after every chunk through the
+   `on_new_files` hook (skipped in `local` mode).
+6. **Auto mode**: `AM_SONGLIST_AUTO = True` in credentials (a `@param`
+   checkbox in the notebook / constant in the cell) makes the bot start the
+   songlist download by itself right after startup — no `/amusic` START press.
+   The notebook cell can also pull the list from a `SONGLIST_URL`
+   (http(s) or `s3://bucket/key`) before starting the bot.
 
 ```
 /amusic
