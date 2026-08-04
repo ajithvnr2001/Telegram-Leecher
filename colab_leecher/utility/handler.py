@@ -77,9 +77,18 @@ async def upload_one_file_throttled(new_path: str, file_name: str):
         await sleep(AM_UPLOAD_GAP)
 
 
-async def Leech(folder_path: str, remove: bool):
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif", ".ico", ".svg")
+
+
+def _is_image_file(path: str) -> bool:
+    return path.lower().endswith(_IMAGE_EXTS)
+
+
+async def Leech(folder_path: str, remove: bool, skip_images: bool = False):
     global BOT, BotTimes, Messages, Paths, Transfer
     files = [str(p) for p in pathlib.Path(folder_path).glob("**/*") if p.is_file()]
+    if skip_images:  # AM flows never want album-cover jpgs uploaded
+        files = [f for f in files if not _is_image_file(f)]
     for f in natsorted(files):
         file_path = ospath.join(folder_path, f)
 
@@ -90,6 +99,8 @@ async def Leech(folder_path: str, remove: bool):
     Transfer.total_down_size = getSize(folder_path)
 
     files = [str(p) for p in pathlib.Path(folder_path).glob("**/*") if p.is_file()]
+    if skip_images:
+        files = [f for f in files if not _is_image_file(f)]
     for f in natsorted(files):
         file_path = ospath.join(folder_path, f)
 
