@@ -305,7 +305,8 @@ async def taskScheduler():
 
 
 async def _am_leech_upload(new_files):
-    """Upload a set of AM files — ONE Leech() call per unique parent directory.
+    """Upload a set of AM files — ONE Leech() call per unique parent directory,
+    with image files (album covers etc.) skipped entirely.
 
     ``Leech(folder)`` uploads EVERY file under that folder, so calling it once
     per file caused N×N duplicate uploads (a 25-file batch = 625 sends) and
@@ -315,7 +316,7 @@ async def _am_leech_upload(new_files):
     from colab_leecher.utility.handler import Leech
 
     for d in sorted({ospath.dirname(f) for f in new_files}):
-        await Leech(d, False)
+        await Leech(d, False, skip_images=True)
 
 async def Do_AM_Music(am_url, is_zip, is_unzip, is_dualzip):
     """Download the predefined Apple Music playlist in batches of 5 songs.
