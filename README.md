@@ -17,6 +17,7 @@
 - [Setup guide](./docs/SETUP.md) — Telegram, Google Drive and S3 credentials end-to-end
 - [Bot commands reference](./docs/COMMANDS.md) — every command, every option
 - [Apple Music deep dive](./docs/APPLE_MUSIC.md) — `/amusic` flow, formats, unified naming convention, batch processing
+- **[Songlist Extractor notebook](./guide/Songlist_Extractor.ipynb)** — extract ALL albums+songs of ONE OR MANY artists into a ready `/amusic songs` list (no login; uses the public iTunes API; multi-artist merging, dedupe, optional S3 push). Companion: [extraction guide](./guide/SONGLIST_EXTRACTION.md) and CLI `tools/extract_songlist.py`.
 - [S3 / Wasabi / B2 deep dive](./docs/S3_GUIDE.md) — `/s3upload`, `/s3leech`, tracker file, multipart, examples
 - [How >2 GB splitting & upload works](./docs/SPLIT_AND_UPLOAD.md) — the splitters, the 2 GB cap, lossless video segments
 - [Architecture](./docs/ARCHITECTURE.md) — module map, task flow, where to add features
