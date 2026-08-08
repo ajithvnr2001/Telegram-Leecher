@@ -516,8 +516,9 @@ async def Do_AM_Songlist(is_zip, is_unzip, is_dualzip):
     Resume is single-file based: the appended log ``music-logs/songlist-dedupe.log``
     (one ``DONE <format> <adamID>`` line per completed track) survives a Colab
     restart via its S3 mirror, so re-running only downloads what's still missing.
-    Downloads run in small chunks; uploads happen incrementally through the
-    ``am_download_songlist`` on_new_files hook.
+    Write-ahead ``UPLOADING`` markers plus a chat-history check make re-uploads
+    duplicate-free across crashes. Downloads run in small chunks; uploads
+    happen incrementally through the ``am_download_songlist`` on_new_files hook.
     """
     from colab_leecher.downlader import apple_music as am_mod
     from colab_leecher.utility.handler import Leech
@@ -569,6 +570,10 @@ async def Do_AM_Songlist(is_zip, is_unzip, is_dualzip):
             f"({len(done_files)} so far)...__",
         )
         Paths.down_path = am_mod.AM_MUSIC_PATH
+        # Crash-resume verification: files whose previous upload already
+        # landed in this chat (name+size match in the history) are skipped
+        # instead of being uploaded a second time.
+        new_files = await am_mod._am_filter_already_uploaded(new_files)
         await _am_leech_upload(new_files)
 
     await am_mod.am_download_songlist(song_urls, on_new_files=_upload_chunk)

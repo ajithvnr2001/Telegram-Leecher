@@ -116,8 +116,11 @@ AM_WRAPPER_ENV = {"AM_BIND_PROC": "1", "AM_NO_PIDNS": "1"}
 
 # Songlist mode (/amusic songs): an arbitrary song list file, e.g. generated
 # from /root/links.txt, is downloaded in ALL formats. Resume state for it is
-# ONE single file (appended line per completed track×format) mirrored to S3,
-# NOT the per-batch batchNN logs of playlist mode.
+# ONE single file (appended line per track×format) mirrored to S3, NOT the
+# per-batch batchNN logs of playlist mode. Two marker kinds: "UPLOADING <fmt>
+# <adamID>" (write-ahead, before the upload) and "DONE <fmt> <adamID>" (after
+# the upload landed), so a crash mid-upload is verified against the chat
+# history on the next run.
 AM_SONGLIST_PATH = "/content/songlist.txt"
 AM_SONGLIST_DEDUPE_KEY = f"{S3_LOG_PREFIX}/songlist-dedupe.log"
 AM_SONGLIST_CHUNK = 25  # songs per am-downloader subprocess (bounds runtime)
@@ -1147,12 +1150,19 @@ def _am_songlist_dedupe_path() -> str:
     return ospath.join(AM_LOG_DIR, "songlist-dedupe.log")
 
 
-def _am_songlist_dedupe_load() -> set:
-    """Load the dedupe set {(format, adamID)} for songlist mode.
+def _am_songlist_dedupe_load():
+    """Load the songlist resume state — ``(done, uploading)`` sets of
+    ``(format, adamID)`` pairs.
+
+    ``done`` = DONE lines (downloaded, uploaded, confirmed). ``uploading`` =
+    write-ahead UPLOADING lines WITHOUT a DONE: the upload started in a
+    previous run but was never confirmed — the next run re-verifies them
+    against the chat history before re-uploading (see
+    ``_am_filter_already_uploaded``).
 
     Sources the S3-mirrored log (remote state survives a Colab restart) and
     merges it with any local copy, then rewrites the local file deduplicated,
-    so future appends stay minimal.
+    so future appends stay minimal. A pair with both lines is DONE.
     """
     makedirs(AM_LOG_DIR, exist_ok=True)
     merged = ""
@@ -1173,27 +1183,40 @@ def _am_songlist_dedupe_load() -> set:
         with open(local_path, "r", encoding="utf-8", errors="ignore") as f:
             merged += "\n" + f.read()
 
-    done = set()
+    done, uploading = set(), set()
     with open(local_path, "w") as f:
         for line in merged.splitlines():
-            m = re.match(r"^DONE ([a-z0-9-]+) (\d+)$", line.strip())
-            if m:
-                done.add((m.group(1), m.group(2)))
+            m = re.match(r"^(DONE|UPLOADING) ([a-z0-9-]+) (\d+)$", line.strip())
+            if not m:
+                continue
+            pair = (m.group(2), m.group(3))
+            if m.group(1) == "DONE":
+                done.add(pair)
+            else:
+                uploading.add(pair)
         for fmt, adam in sorted(done):
             f.write(f"DONE {fmt} {adam}\n")
-    logging.info("AM songlist dedupe: %d track×format completions loaded", len(done))
-    return done
+        for fmt, adam in sorted(uploading - done):
+            f.write(f"UPLOADING {fmt} {adam}\n")
+    unconfirmed = uploading - done
+    logging.info(
+        "AM songlist dedupe: %d completions, %d unconfirmed uploads loaded",
+        len(done),
+        len(unconfirmed),
+    )
+    return done, unconfirmed
 
 
-def _am_songlist_dedupe_append(done_pairs):
-    """Append DONE <fmt> <adamID> lines and mirror the whole log back to S3."""
-    if not done_pairs:
+def _am_songlist_dedupe_write(kind: str, pairs: list):
+    """Append ``<kind> <fmt> <adamID>`` lines to the dedupe log and mirror the
+    whole file back to S3."""
+    if not pairs:
         return
     makedirs(AM_LOG_DIR, exist_ok=True)
     local_path = _am_songlist_dedupe_path()
     with open(local_path, "a") as f:
-        for fmt, adam in sorted(done_pairs):
-            f.write(f"DONE {fmt} {adam}\n")
+        for fmt, adam in pairs:
+            f.write(f"{kind} {fmt} {adam}\n")
     if S3_BUCKET_NAME:
         try:
             from colab_leecher.uploader.s3 import ensure_s3_client
@@ -1207,6 +1230,87 @@ def _am_songlist_dedupe_append(done_pairs):
             logging.error(f"AM songlist dedupe mirror failed: {e}")
 
 
+def _am_songlist_dedupe_append(done_pairs):
+    """Append DONE <fmt> <adamID> lines — a track is marked only AFTER its
+    files reached Telegram — and mirror the whole log back to S3."""
+    _am_songlist_dedupe_write("DONE", sorted(done_pairs))
+
+
+def _am_songlist_dedupe_mark_uploading(pairs):
+    """Write-ahead marker: append ``UPLOADING <fmt> <adamID>`` lines BEFORE the
+    chunk's Telegram upload, and mirror to S3. If the runtime crashes mid-
+    upload, the next run sees these as unconfirmed and verifies them against
+    the chat history instead of blindly re-uploading."""
+    _am_songlist_dedupe_write("UPLOADING", sorted(pairs))
+
+
+def _am_history_confirmed_files(files: list, history_pairs: set) -> set:
+    """Of local ``files``, the subset already present in a Telegram history
+    snapshot of ``(file_name, file_size)`` pairs.
+
+    Pure name+size match: am-downloader output is deterministic per song and
+    format, so an identical file name AND byte size in the destination chat
+    means the previous upload landed there.
+    """
+    confirmed = set()
+    for f in files:
+        try:
+            size = ospath.getsize(f)
+        except OSError:
+            continue
+        if (ospath.basename(f), size) in history_pairs:
+            confirmed.add(f)
+    return confirmed
+
+
+async def _am_filter_already_uploaded(new_files: list) -> list:
+    """Drop files that Telegram's own history proves were already uploaded.
+
+    Scans the task chat (where AM files are sent, replying to the command
+    message) for media with the same file name + byte size. This resolves
+    UPLOADING markers left by a crash mid-upload: a file is re-uploaded ONLY
+    when it is genuinely missing from the chat. Any scan failure degrades to
+    "upload everything" (the pre-tracker behaviour).
+    """
+    if not new_files:
+        return []
+    try:
+        from colab_leecher import colab_bot
+        from colab_leecher.utility.variables import MSG
+
+        chat_id = MSG.sent_msg.chat.id
+    except Exception as e:
+        logging.warning(f"AM history check skipped (no chat context): {e}")
+        return new_files
+    try:
+        history = [
+            m
+            async for m in colab_bot.get_chat_history(
+                chat_id, limit=max(len(new_files) * 4, 100)
+            )
+            if m.media and getattr(m, m.media.value, None)
+        ]
+    except Exception as e:
+        logging.warning(
+            f"AM history check failed — uploading all {len(new_files)} files: {e}"
+        )
+        return new_files
+    seen = set()
+    for m in history:
+        media = getattr(m, m.media.value)
+        name = getattr(media, "file_name", None)
+        size = getattr(media, "file_size", None)
+        if name and size:
+            seen.add((name, size))
+    confirmed = _am_history_confirmed_files(new_files, seen)
+    if confirmed:
+        logging.info(
+            "AM history check: %d file(s) already on Telegram — skipping re-upload",
+            len(confirmed),
+        )
+    return [f for f in new_files if f not in confirmed]
+
+
 def _am_songlist_log_key(fmt: str) -> str:
     """S3 key of the appended am-downloader log for one songlist format pass."""
     return f"{S3_LOG_PREFIX}/songlist/{fmt}.log"
@@ -1218,8 +1322,10 @@ async def am_download_songlist(song_urls: list, on_new_files=None):
     Resume state lives in a SINGLE appended dedupe log mirroring
     ``music-logs/songlist-dedupe.log`` in S3: every completed track×format is
     a ``DONE <format> <adamID>`` line — but only AFTER its files were uploaded
-    (download → upload → log append), so a crash between download and upload
-    re-runs the chunk instead of losing it. The am-downloader output of every
+    (download → upload → log append). Before each chunk's upload the write-
+    ahead ``UPLOADING <format> <adamID>`` markers are mirrored too, so a crash
+    mid-upload is verified against the chat history on the next boot instead
+    of silently duplicating files. The am-downloader output of every
     chunk of the same format is appended into ONE format log
     (`` songlist/<fmt>-songlist.log ``). ``on_new_files(fmt, new_files)`` is
     awaited after every chunk (task manager uses it to upload/report) and must
@@ -1234,7 +1340,7 @@ async def am_download_songlist(song_urls: list, on_new_files=None):
 
     os.chdir(AM_MUSIC_PATH)
 
-    done = _am_songlist_dedupe_load()
+    done, _unconfirmed = _am_songlist_dedupe_load()
     results = []  # [(format_name, appended_log_path)] — one entry per format
     total_fmt = len(AM_FORMATS)
     for i, (name, extra_args, file_format) in enumerate(AM_FORMATS, start=1):
@@ -1279,13 +1385,16 @@ async def am_download_songlist(song_urls: list, on_new_files=None):
             # Mirror the appended per-format log too (best effort), so even a
             # crash leaves the full traceback of what was attempted.
             _am_songlist_mirror_log(fmt, log_path)
-            # ORDER IS CRITICAL: 1) download (above) -> 2) upload -> 3) dedupe
-            # append. A track is marked DONE only AFTER its files reached
-            # Telegram, so a crash between download and upload re-runs the
-            # chunk on the next boot instead of losing the files forever.
+            # ORDER IS CRITICAL: 1) download (above) -> 2) write-ahead
+            # UPLOADING markers -> 3) upload -> 4) dedupe DONE append. The
+            # UPLOADING lines are mirrored to S3 BEFORE the upload starts, so
+            # a crash mid-upload leaves an unconfirmed pair that the next run
+            # verifies against the chat history instead of re-uploading blind.
+            # A track is marked DONE only AFTER its files reached Telegram.
             if on_new_files is not None:
                 new_files = sorted((_am_files_snapshot() - before) | extra_files)
                 if new_files:
+                    _am_songlist_dedupe_mark_uploading(newly)
                     await on_new_files(fmt, new_files)
             done |= newly
             _am_songlist_dedupe_append(newly)

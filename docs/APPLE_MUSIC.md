@@ -145,15 +145,24 @@ just stay on the Colab disk.
    `s3://<bucket>/music-logs/songlist-dedupe.log`. On startup the S3 copy is
    merged with the local one, so a Colab restart — even a fresh runtime —
    skips everything already done ("resume based on S3 log"). **Order is
-   critical: download → upload to Telegram → log append.** A track is only
-   marked done AFTER its files landed in Telegram — a crash between download
-   and upload re-runs that chunk next boot instead of losing the files.
-4. The am-downloader output of every chunk of the same format is appended
+   critical: download → write-ahead `UPLOADING` markers → upload to Telegram
+   → `DONE` log append.** A track is only marked done AFTER its files landed
+   in Telegram — a crash between download and upload re-runs that chunk next
+   boot instead of losing the files.
+4. **Crash-safe re-upload (no duplicates):** before each chunk's upload,
+   `UPLOADING <format> <adamID>` write-ahead markers are mirrored to S3. If
+   the runtime dies mid-upload, the next run sees unconfirmed pairs and
+   verifies them against the chat history (`get_chat_history` name+byte-size
+   match via `_am_filter_already_uploaded`) — a file is re-uploaded **only**
+   when Telegram proves it is genuinely missing. Assumptions: the task runs
+   in the same chat across runs, and no second session runs concurrently
+   (two sessions can both pass the check and upload).
+5. The am-downloader output of every chunk of the same format is appended
    into ONE cumulative log (`am-logs/<format>-songlist.log`, mirrored to
    `music-logs/songlist/<format>.log`).
-5. New files are uploaded to Telegram after every chunk through the
+6. New files are uploaded to Telegram after every chunk through the
    `on_new_files` hook (skipped in `local` mode).
-6. **Auto mode**: `AM_SONGLIST_AUTO = True` in credentials (a `@param`
+7. **Auto mode**: `AM_SONGLIST_AUTO = True` in credentials (a `@param`
    checkbox in the notebook / constant in the cell) makes the bot start the
    songlist download by itself right after startup — no `/amusic` START press.
    The notebook cell can also pull the list from a `SONGLIST_URL`
