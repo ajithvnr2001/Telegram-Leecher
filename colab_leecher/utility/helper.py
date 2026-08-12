@@ -320,10 +320,17 @@ def multipartArchive(path: str, type: str, remove: bool):
 
 def isTimeOver():
     global BotTimes
-    ten_sec_passed = time() - BotTimes.current_time >= 3
-    if ten_sec_passed:
+    # Throttle Telegram status-message edits. Rapid progress updates hammer
+    # messages.EditMessage and trip Telegram's rate limiter -> "Request timed
+    # out", connection drops and Disconnected storms on the uploader (both
+    # messages.EditMessage and upload.SaveBigFilePart start failing). 15s means
+    # at most ~4 edits/min instead of ~20, which keeps the progress bar live
+    # while staying well under the limit. Used only by status_bar().
+    edit_int_secs = 15
+    slot_passed = time() - BotTimes.current_time >= edit_int_secs
+    if slot_passed:
         BotTimes.current_time = time()
-    return ten_sec_passed
+    return slot_passed
 
 
 def applyCustomName():

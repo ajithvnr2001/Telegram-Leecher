@@ -63,4 +63,14 @@ install()
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
-colab_bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+colab_bot = Client(
+    "my_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    # Auto-sleep on Telegram FloodWait (rate-limit) instead of raising, so big
+    # multi-part uploads pause gracefully rather than erroring out with
+    # "Request timed out" / SaveBigFilePart retries when the bot hits its edit
+    # or message rate ceiling.
+    sleep_threshold=300,
+)
